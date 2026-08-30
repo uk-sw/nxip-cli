@@ -15,14 +15,18 @@ around primitives that already work.
 
 ## Install
 
+Not yet published to the npm registry - install directly from GitHub for
+now, this is verified working, `npm` runs the build automatically on
+install:
+
 ```bash
-npm install -g nxip-cli
+npm install -g github:uk-sw/nxip-cli
 ```
 
 Or run without installing:
 
 ```bash
-npx nxip-cli plan -f subnets.yaml
+npx github:uk-sw/nxip-cli plan -f subnets.yaml
 ```
 
 ## Usage
