@@ -1,0 +1,23 @@
+# Example manifest for `nxip plan` / `nxip apply`.
+#
+# v1 scope is top-level subnets only: each one either auto-resolves onto a
+# matching pool by environment/region/family (like `payments` below), or
+# nests under an already-existing subnet by real ID via parent_subnet_id.
+# A subnet referencing another subnet declared later in this same file
+# isn't resolved - see the README's "Known limitations".
+
+subnets:
+  - name: payments
+    environment: production
+    region: us-east-1
+    family: IPV4
+    prefix_length: 24
+    metadata:
+      owner: platform-team
+      cost_center: cc-42
+
+  - name: checkout
+    environment: production
+    region: us-east-1
+    family: IPV4
+    prefix_length: 25

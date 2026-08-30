@@ -1,0 +1,33 @@
+{
+  "name": "nxip-cli",
+  "version": "0.1.0",
+  "description": "Declare nxip subnets in YAML, plan and apply them - the plan/apply loop without Terraform",
+  "type": "module",
+  "bin": {
+    "nxip": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/uk-sw/nxip-cli"
+  },
+  "dependencies": {
+    "yaml": "^2.6.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.11"
+  }
+}
