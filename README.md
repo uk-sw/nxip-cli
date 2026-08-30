@@ -64,6 +64,45 @@ Plan: 1 to create, 0 would fail.
 Terraform), then creates whatever the plan predicted would succeed. Pass
 `--auto-approve` to skip the prompt, e.g. in CI.
 
+## Scaffolding a new site (`nxip scaffold`)
+
+For standing up a new site or landing zone across multiple clouds at
+once, rather than declaring subnets one at a time. `nxip scaffold` expands
+a higher-level site spec into a normal `nxip plan`/`apply` manifest, no
+new nxip capability, this is a generator over the same
+`nxip_subnet`-carving primitive, extended from one workload's subnet
+shape to an entire new site's full addressing plan.
+
+`site.yaml`:
+
+```yaml
+site: emea-fra-01
+environments: [production, staging]
+clouds:
+  - provider: aws
+    region: eu-central-1
+  - provider: azure
+    region: germanywestcentral
+sizing:
+  production: 24
+  staging: 26
+```
+
+```bash
+nxip scaffold -f site.yaml -o subnets.yaml
+nxip plan -f subnets.yaml
+```
+
+Expands into one subnet per (environment x cloud) pair, four subnets for
+the example above, each routed to `{provider}-{region}` as its nxip
+`region`, guaranteed non-overlapping against every other allocation in the
+organization, not just within one cloud, the same wedge as
+[`terraform-nxip-modules`](https://github.com/uk-sw/terraform-nxip-modules)'
+Kubernetes CIDR authority modules, applied to a whole site instead of one
+cluster. Cloud-first for now: a pool must already exist for each
+(environment, region) combination this produces, on-prem sites are a
+later extension once a discovery agent or CSV import exists to seed them.
+
 ## Field reference
 
 YAML fields deliberately match `nxip_subnet`'s Terraform attribute names

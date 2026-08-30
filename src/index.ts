@@ -1,14 +1,16 @@
 #!/usr/bin/env node
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { resolveClientOptions } from './client.js';
 import { ManifestError, parseManifest } from './manifest.js';
 import { formatPlan, planManifest } from './plan.js';
 import { applyManifest, formatApplyResults } from './apply.js';
+import { expandSiteSpec, renderManifest, SiteSpecError } from './site.js';
 
 interface ParsedArgs {
   command: string;
   file?: string;
+  output?: string;
   apiKey?: string;
   url?: string;
   autoApprove: boolean;
@@ -22,6 +24,8 @@ function parseArgs(argv: string[]): ParsedArgs {
     const arg = rest[i];
     if (arg === '-f' || arg === '--file') {
       args.file = rest[++i];
+    } else if (arg === '-o' || arg === '--output') {
+      args.output = rest[++i];
     } else if (arg === '--api-key') {
       args.apiKey = rest[++i];
     } else if (arg === '--url') {
@@ -66,6 +70,33 @@ function loadManifest(file: string | undefined) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+
+  // scaffold is a pure local generator - no nxip account needed to expand
+  // a site spec into a manifest, only to plan/apply the result afterward.
+  if (args.command === 'scaffold') {
+    if (!args.file) {
+      console.error('Missing required -f/--file <site.yaml>');
+      process.exitCode = 1;
+      return;
+    }
+    let manifest: string;
+    try {
+      const raw = readFileSync(args.file, 'utf-8');
+      manifest = renderManifest(expandSiteSpec(raw));
+    } catch (error) {
+      console.error(error instanceof SiteSpecError ? error.message : `Could not read ${args.file}: ${error instanceof Error ? error.message : String(error)}`);
+      process.exitCode = 1;
+      return;
+    }
+    if (args.output) {
+      writeFileSync(args.output, manifest, 'utf-8');
+      console.log(`Wrote ${args.output}. Review it, then run: nxip plan -f ${args.output}`);
+    } else {
+      process.stdout.write(manifest);
+    }
+    return;
+  }
+
   const options = resolveClientOptions(args.apiKey, args.url);
 
   if (!options.apiKey) {
@@ -105,6 +136,7 @@ async function main() {
   }
 
   console.error('Usage: nxip <plan|apply> -f <manifest.yaml> [--api-key KEY] [--url URL] [--auto-approve]');
+  console.error('       nxip scaffold -f <site.yaml> [-o <manifest.yaml>]');
   process.exitCode = 1;
 }
 

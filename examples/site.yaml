@@ -1,0 +1,19 @@
+# Example for `nxip scaffold`. Expands into one subnet per
+# (environment x cloud) pair - run the generated manifest through
+# `nxip plan` / `nxip apply` as normal afterward.
+#
+# Cloud-first, per the roadmap's own scoping: a pool must already exist
+# for each (environment, provider-region) combination this produces.
+
+site: emea-fra-01
+environments:
+  - production
+  - staging
+clouds:
+  - provider: aws
+    region: eu-central-1
+  - provider: azure
+    region: germanywestcentral
+sizing:
+  production: 24
+  staging: 26
