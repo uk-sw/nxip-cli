@@ -12,6 +12,7 @@ const subnetEntrySchema = z
     region: z.string().min(1).optional(),
     family: z.enum(['IPV4', 'IPV6']),
     prefix_length: z.number().int().optional(),
+    cidr: z.string().min(1).optional(),
     parent_subnet_id: z.string().min(1).optional(),
     kind: z.string().min(1).optional(),
     description: z.string().optional(),
@@ -19,6 +20,12 @@ const subnetEntrySchema = z
   })
   .refine((entry) => entry.parent_subnet_id !== undefined || (entry.environment !== undefined && entry.region !== undefined), {
     message: 'Either parent_subnet_id, or both environment and region, is required.',
+  })
+  // Mirrors the API's own rule (createSubnetSchema): exactly one of cidr or
+  // prefix_length. Caught here so a whole manifest fails locally with a
+  // clear message rather than one entry at a time against the API.
+  .refine((entry) => (entry.cidr === undefined) !== (entry.prefix_length === undefined), {
+    message: 'Exactly one of `cidr` or `prefix_length` is required.',
   });
 
 const manifestSchema = z.object({
@@ -60,6 +67,7 @@ export function parseManifest(rawYaml: string): ManifestEntry[] {
     body: {
       family: entry.family,
       prefixLength: entry.prefix_length,
+      cidr: entry.cidr,
       environment: entry.environment,
       region: entry.region,
       parentSubnetId: entry.parent_subnet_id,

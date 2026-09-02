@@ -1,7 +1,28 @@
 {
   "name": "nxip-cli",
-  "version": "0.1.0",
-  "description": "Declare nxip subnets in YAML, plan and apply them - the plan/apply loop without Terraform",
+  "version": "0.2.0",
+  "description": "Scan your AWS estate for overlapping VPC CIDRs and wasted address space, and manage IP allocation with plan/apply - no Terraform required",
+  "keywords": [
+    "ipam",
+    "ip-address-management",
+    "cidr",
+    "subnet",
+    "vpc",
+    "aws",
+    "terraform",
+    "networking",
+    "ip-allocation",
+    "network-automation"
+  ],
+  "homepage": "https://nx-ip.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/uk-sw/nxip-cli"
+  },
+  "bugs": {
+    "url": "https://github.com/uk-sw/nxip-cli/issues"
+  },
+  "license": "MIT",
   "type": "module",
   "bin": {
     "nxip": "./dist/index.js"
@@ -9,6 +30,12 @@
   "files": [
     "dist"
   ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc",
     "prepare": "npm run build",
@@ -16,12 +43,9 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/uk-sw/nxip-cli"
-  },
   "dependencies": {
+    "@aws-sdk/client-ec2": "^3.1125.0",
+    "@aws-sdk/client-sts": "^3.1125.0",
     "yaml": "^2.6.1",
     "zod": "^4.4.3"
   },

@@ -1,0 +1,51 @@
+name: Release
+
+# Publishing is tag-triggered so the npm token lives in repository secrets
+# and never on a laptop, matching how the Terraform provider already
+# releases. To cut a release: bump the version in package.json, commit,
+# then `git tag v0.2.0 && git push --tags`.
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Lets npm record a verified link back to the commit and workflow that
+      # produced the tarball, so anyone installing can check where it came from.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - run: npm ci
+
+      # The same gates CI runs. A tag must not be able to publish something
+      # that would have failed on main.
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+      # Refuse to publish a tag that disagrees with package.json, which is
+      # the easiest release mistake to make and the most confusing to debug
+      # afterwards.
+      - name: Check the tag matches the package version
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "Tag $GITHUB_REF_NAME implies version $TAG_VERSION, but package.json says $PKG_VERSION."
+            exit 1
+          fi
+          echo "Publishing $PKG_VERSION"
+
+      - run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

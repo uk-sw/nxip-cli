@@ -8,6 +8,13 @@ export type AddressFamily = 'IPV4' | 'IPV6';
 export interface NxipSubnetBody {
   family: AddressFamily;
   prefixLength?: number;
+  /**
+   * Register this exact block instead of letting nxip pick one. The API
+   * takes exactly one of `cidr` or `prefixLength` - see createSubnetSchema.
+   * This is what lets a discovered estate be registered as it actually is,
+   * rather than a parallel plan being invented alongside it.
+   */
+  cidr?: string;
   environment?: string;
   region?: string;
   parentSubnetId?: string;

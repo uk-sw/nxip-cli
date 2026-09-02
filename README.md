@@ -1,5 +1,37 @@
 # nxip-cli
 
+**See what IP space you actually have, before you commit to anything:**
+
+```bash
+npx nxip-cli scan aws
+```
+
+Read-only, no nxip account, no signup. It uses the AWS credentials you
+already have, finds every VPC and subnet, and tells you which blocks
+collide and how much space is sitting unused. Nothing is written anywhere
+and nothing leaves your machine.
+
+```
+Found 5 VPCs and 6 subnets.
+
+Overlapping address space: 2 pairs
+
+  10.0.0.0/16 identical block 10.0.0.0/16
+    prod-euw2 (vpc-0aa1) in eu-west-2
+    staging-use1 (vpc-0bb2) in us-east-1
+    65,536 addresses in common
+
+  These VPCs cannot be peered or routed to each other without renumbering one side.
+
+Across everything: 327,936 addresses reserved, 9,216 carved into subnets, 97% never allocated.
+```
+
+Overlapping VPC CIDRs are the kind of thing nobody discovers until the day
+they try to peer two networks, or acquire a company, and by then the fix is
+renumbering production. This finds them in about ten seconds.
+
+## The rest of it
+
 Declare nxip subnets in YAML, `plan` and `apply` them, the same mental
 model Terraform gives you, without needing Terraform. Built for teams who
 will never adopt HCL: on-prem network teams, teams standardized on
@@ -15,19 +47,69 @@ around primitives that already work.
 
 ## Install
 
-Not yet published to the npm registry - install directly from GitHub for
-now, this is verified working, `npm` runs the build automatically on
-install:
-
 ```bash
-npm install -g github:uk-sw/nxip-cli
+npm install -g nxip-cli
 ```
 
-Or run without installing:
+Or run it without installing:
 
 ```bash
-npx github:uk-sw/nxip-cli plan -f subnets.yaml
+npx nxip-cli scan aws
 ```
+
+`scan` and `scaffold` need no nxip account. `plan` and `apply` need an API
+key, free at [nx-ip.com](https://nx-ip.com/signup).
+
+## Scanning an AWS account (`nxip scan`)
+
+```bash
+nxip scan aws                          # your default region
+nxip scan aws --region eu-west-2,us-east-1
+nxip scan aws --all-regions            # every region you can reach
+nxip scan aws --profile my-sso-profile
+nxip scan aws --json                   # machine-readable, for piping
+```
+
+Needs read-only `ec2:DescribeVpcs` and `ec2:DescribeSubnets`. Credentials
+come from the standard AWS chain, so whatever already works for the AWS CLI
+works here: environment variables, a named profile, SSO, or an instance
+role.
+
+What it reports:
+
+- **Every VPC and subnet**, with how much of each VPC is actually carved up
+- **Overlapping address space** between VPCs, across regions, ranked by how
+  much they share. This is the finding that matters
+- **Unused space**, because a `/16` that is 3% carved is a decision someone
+  made once and never revisited
+
+### Turning a scan into a registry (`--emit-manifest`)
+
+```bash
+nxip scan aws --all-regions --emit-manifest -o discovered.yaml
+nxip plan -f discovered.yaml
+```
+
+This writes a manifest using the CIDRs that are *actually deployed*, so
+applying it registers your estate as it really is rather than allocating a
+parallel set of blocks alongside it. Each entry carries its AWS VPC and
+subnet id in metadata, so the link back to the source survives.
+
+Review it before applying. Names come from AWS `Name` tags, which are
+frequently duplicated and not always what you would want nxip to call
+things, and you need a pool in nxip covering each environment/region/family
+before `nxip apply` will succeed.
+
+### Limits worth knowing
+
+IPv6 blocks are listed but not overlap-analysed. AWS allocates IPv6 from
+its own globally unique space, so the collision problem that makes this
+worth running simply does not arise there in the way it does for RFC1918
+IPv4.
+
+The scan reads VPCs and subnets, not what is running inside them. It can
+tell you a `/16` is 3% carved; it cannot yet tell you the carved 3% is
+itself mostly idle.
 
 ## Usage
 
@@ -119,7 +201,8 @@ the Terraform provider carries over directly:
 | `family` | Yes | `IPV4` or `IPV6`. |
 | `environment` / `region` | One of these, or `parent_subnet_id` | Routes to a matching pool by auto-resolution. |
 | `parent_subnet_id` | One of these, or `environment`/`region` | Nest under an already-existing subnet by real ID, bypassing auto-resolution. |
-| `prefix_length` | No | Size of the block to auto-allocate. |
+| `prefix_length` | Exactly one of these two | Size of the block to auto-allocate, letting nxip choose where it lands. |
+| `cidr` | Exactly one of these two | Register this exact block instead. What `nxip scan --emit-manifest` emits, so a discovered estate is recorded as it really is rather than reallocated. |
 | `kind` | No | Tags this subnet as a structural landing point for later auto-resolution. |
 | `description` | No | Free text. |
 | `metadata` | No | String key/value pairs, capped at 20 keys / 128-char keys / 256-char values, same limit the API itself enforces. |
