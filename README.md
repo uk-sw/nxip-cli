@@ -14,17 +14,26 @@ and nothing leaves your machine.
 ```
 Found 5 VPCs and 6 subnets.
 
-Overlapping address space: 2 pairs
+Overlapping address space: 2 conflicts across 4 VPCs
 
-  10.0.0.0/16 identical block 10.0.0.0/16
-    prod-euw2 (vpc-0aa1) in eu-west-2
-    staging-use1 (vpc-0bb2) in us-east-1
-    65,536 addresses in common
+  10.0.0.0/16 claimed by 2 VPCs
+    prod-euw2 (vpc-0aa1)               eu-west-2      10.0.0.0/16
+    staging-use1 (vpc-0bb2)            us-east-1      10.0.0.0/16
+    65,536 addresses in common at most
 
-  These VPCs cannot be peered or routed to each other without renumbering one side.
+  10.20.0.0/16 / 10.20.5.0/24 overlap across 2 VPCs
+    data-platform (vpc-0cc3)           eu-west-2      10.20.0.0/16
+    legacy-dc-link (vpc-0ee5)          eu-west-2      10.20.5.0/24
+    256 addresses in common at most
+
+  These cannot be peered or routed to each other without renumbering one side.
 
 Across everything: 327,936 addresses reserved, 9,216 carved into subnets, 97% never allocated.
 ```
+
+Overlap that is deliberate, like the `100.64.0.0/10` pod ranges AWS
+recommends reusing across EKS clusters, is recognized and set aside rather
+than reported. See [below](#overlaps-that-are-supposed-to-be-there).
 
 Overlapping VPC CIDRs are the kind of thing nobody discovers until the day
 they try to peer two networks, or acquire a company, and by then the fix is
@@ -67,6 +76,8 @@ nxip scan aws                          # your default region
 nxip scan aws --region eu-west-2,us-east-1
 nxip scan aws --all-regions            # every region you can reach
 nxip scan aws --profile my-sso-profile
+nxip scan aws --exclude 192.168.0.0/16 # ranges you share on purpose
+nxip scan aws --include-shared         # report even the expected overlaps
 nxip scan aws --json                   # machine-readable, for piping
 ```
 
@@ -99,6 +110,48 @@ Review it before applying. Names come from AWS `Name` tags, which are
 frequently duplicated and not always what you would want nxip to call
 things, and you need a pool in nxip covering each environment/region/family
 before `nxip apply` will succeed.
+
+### Overlaps that are supposed to be there
+
+Plenty of overlap is deliberate. AWS's own EKS guidance recommends carving
+pod subnets from `100.64.0.0/10` precisely so they do not consume corporate
+RFC1918 space, which means a fleet of clusters is *meant* to reuse the same
+block in every VPC. Flagging each of those would bury the handful of real
+collisions under hundreds of false ones.
+
+So these ranges are recognized as expected-shared by default, and overlaps
+confined to them are counted but not reported as conflicts:
+
+| Range | Why |
+|---|---|
+| `100.64.0.0/10` | RFC 6598 shared address space, AWS's recommendation for EKS pod subnets |
+| `198.19.0.0/16` | RFC 2544 benchmarking range, also used for non-routable secondary CIDRs |
+| `169.254.0.0/16` | RFC 3927 link-local, never routable between networks |
+
+RFC1918 is deliberately *not* on that list. Two VPCs both claiming
+`10.0.0.0/16` is the exact problem this exists to find.
+
+The suppression is judged on the overlapping region, not the VPC, so a VPC
+carrying a `100.64` secondary alongside a routable primary still gets its
+routable collisions reported. Nothing is hidden silently either - the report
+says how many overlaps it set aside and which range did it:
+
+```
+Ignored 300 overlaps in ranges that are expected to be shared:
+  100.64.0.0/10      RFC 6598 shared address space, which AWS recommends for EKS pod subnets
+  Pass --include-shared to see them, or --exclude to add your own ranges.
+```
+
+Add your own conventions with `--exclude 192.168.0.0/16,172.20.0.0/14`, or
+turn the whole thing off with `--include-shared`.
+
+### Findings are grouped, not listed pairwise
+
+Twenty VPCs sharing one block is 190 overlapping pairs all saying the same
+thing. They are reported as a single conflict listing all twenty, so output
+grows with the number of VPCs involved rather than the square of it.
+Grouping is transitive: if A contains B and B overlaps C, all three are one
+finding even where A and C do not touch.
 
 ### Limits worth knowing
 

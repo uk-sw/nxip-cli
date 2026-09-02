@@ -9,6 +9,7 @@ import { expandSiteSpec, renderManifest, SiteSpecError } from './site.js';
 import { readVersion } from './version.js';
 import { discoverAws, AwsScanError } from './aws.js';
 import { analyseDiscovery, formatScanReport, renderDiscoveryManifest } from './scan.js';
+import { DEFAULT_SHARED_RANGES, parseSharedRanges, SharedRangeError } from './shared-ranges.js';
 
 interface ParsedArgs {
   command: string;
@@ -23,6 +24,8 @@ interface ParsedArgs {
   profile?: string;
   json: boolean;
   emitManifest: boolean;
+  exclude?: string[];
+  includeShared: boolean;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -33,6 +36,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     allRegions: false,
     json: false,
     emitManifest: false,
+    includeShared: false,
   };
 
   // `scan` takes a provider as its first positional (`nxip scan aws`).
@@ -62,6 +66,10 @@ function parseArgs(argv: string[]): ParsedArgs {
       args.json = true;
     } else if (arg === '--emit-manifest') {
       args.emitManifest = true;
+    } else if (arg === '--exclude') {
+      args.exclude = (rest[++i] ?? '').split(',').map((r) => r.trim()).filter(Boolean);
+    } else if (arg === '--include-shared') {
+      args.includeShared = true;
     }
   }
 
@@ -100,7 +108,8 @@ function loadManifest(file: string | undefined) {
 
 function printUsage(stream: 'out' | 'err' = 'err') {
   const write = stream === 'out' ? console.log : console.error;
-  write('Usage: nxip scan aws [--region NAME] [--all-regions] [--profile NAME] [--json] [--emit-manifest] [-o FILE]');
+  write('Usage: nxip scan aws [--region NAME] [--all-regions] [--profile NAME] [--exclude CIDR,...]');
+  write('                     [--include-shared] [--json] [--emit-manifest] [-o FILE]');
   write('       nxip scaffold -f <site.yaml> [-o <manifest.yaml>]');
   write('       nxip <plan|apply> -f <manifest.yaml> [--api-key KEY] [--url URL] [--auto-approve]');
   write('');
@@ -172,7 +181,7 @@ async function main() {
   // anywhere and nothing leaves the machine.
   if (args.command === 'scan') {
     if (args.subcommand !== 'aws') {
-      console.error('Usage: nxip scan aws [--region eu-west-2] [--all-regions] [--profile NAME] [--json] [--emit-manifest] [-o FILE]');
+      console.error('Usage: nxip scan aws [--region eu-west-2] [--all-regions] [--profile NAME] [--exclude CIDR,...] [--include-shared] [--json] [--emit-manifest] [-o FILE]');
       console.error(args.subcommand ? `Unknown provider "${args.subcommand}". Only aws is supported today.` : 'Missing provider. Only aws is supported today.');
       process.exitCode = 1;
       return;
@@ -187,7 +196,21 @@ async function main() {
       return;
     }
 
-    const report = analyseDiscovery(discovery);
+    // Ranges where overlap is expected by design. Defaults cover the ones
+    // cloud providers themselves recommend reusing (see shared-ranges.ts);
+    // --exclude adds org-specific ones, --include-shared turns the lot off.
+    let sharedRanges;
+    try {
+      sharedRanges = args.includeShared
+        ? []
+        : [...DEFAULT_SHARED_RANGES, ...parseSharedRanges(args.exclude ?? [])];
+    } catch (error) {
+      console.error(error instanceof SharedRangeError ? error.message : String(error));
+      process.exitCode = 1;
+      return;
+    }
+
+    const report = analyseDiscovery(discovery, { sharedRanges });
 
     const output = args.emitManifest
       ? renderDiscoveryManifest(report)
@@ -209,7 +232,7 @@ async function main() {
     // The pitch goes to stderr so it never contaminates piped JSON or a
     // manifest being redirected to a file.
     if (!args.emitManifest && !args.json) {
-      if (report.overlaps.length > 0) {
+      if (report.clusters.length > 0) {
         console.error('Want these checked before the next terraform apply, not after? https://nx-ip.com');
       } else {
         console.error('Want this tracked continuously as your estate changes? https://nx-ip.com');

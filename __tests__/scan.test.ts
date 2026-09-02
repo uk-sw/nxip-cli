@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { analyseDiscovery, formatScanReport, renderDiscoveryManifest, type Discovery } from '../src/scan.js';
+import { parseSharedRanges, SharedRangeError } from '../src/shared-ranges.js';
 import { parseManifest } from '../src/manifest.js';
 
 function discovery(overrides: Partial<Discovery> = {}): Discovery {
@@ -148,7 +149,7 @@ describe('formatScanReport', () => {
         })
       )
     );
-    expect(output).toContain('Overlapping address space: 1 pair');
+    expect(output).toContain('Overlapping address space: 1 conflict across 2 VPCs');
     expect(output).toContain('cannot be peered or routed');
   });
 
@@ -220,5 +221,169 @@ describe('renderDiscoveryManifest', () => {
       })
     );
     expect(parseManifest(renderDiscoveryManifest(untagged))[0].name).toBe('subnet-xyz');
+  });
+});
+
+describe('expected-shared ranges', () => {
+  // The scenario that makes or breaks the first run: AWS recommends carving
+  // EKS pod subnets from 100.64.0.0/10 precisely so they do not consume
+  // RFC1918, which means a fleet of clusters is supposed to reuse the same
+  // block everywhere. Reporting each as a collision would bury the real ones.
+  function eksFleet(count: number) {
+    return discovery({
+      networks: Array.from({ length: count }, (_, i) => ({
+        id: `vpc-eks-${i}`,
+        name: `eks-${i}`,
+        region: 'eu-west-2',
+        cidrs: [`10.${i}.0.0/16`, '100.64.0.0/16'],
+      })),
+    });
+  }
+
+  it('does not report CGNAT pod ranges shared across a cluster fleet', () => {
+    const report = analyseDiscovery(eksFleet(10));
+    expect(report.clusters).toEqual([]);
+    // 10 VPCs sharing one block is 45 pairs, all deliberate.
+    expect(report.suppressed.pairs).toBe(45);
+    expect(report.suppressed.ranges.map((r) => r.cidr)).toContain('100.64.0.0/10');
+  });
+
+  it('still reports a routable collision on a VPC that also carries a shared secondary', () => {
+    // The subtlety that matters: suppression is judged on the overlapping
+    // region, not the VPC. A VPC with a 100.64 secondary must not become
+    // immune to collisions on its routable primary.
+    const fleet = eksFleet(3);
+    fleet.networks[1].cidrs = ['10.0.0.0/16', '100.64.0.0/16'];
+    const report = analyseDiscovery(fleet);
+
+    expect(report.clusters).toHaveLength(1);
+    expect(report.clusters[0].members.map((m) => m.cidr)).toEqual(['10.0.0.0/16', '10.0.0.0/16']);
+    expect(report.suppressed.pairs).toBeGreaterThan(0);
+  });
+
+  it('reports everything when shared ranges are turned off', () => {
+    const report = analyseDiscovery(eksFleet(10), { sharedRanges: [] });
+    expect(report.suppressed.pairs).toBe(0);
+    expect(report.overlaps).toHaveLength(45);
+    // Still one finding, not 45 - clustering carries the scale on its own.
+    expect(report.clusters).toHaveLength(1);
+    expect(report.clusters[0].members).toHaveLength(10);
+  });
+
+  it('suppresses 198.19.0.0/16 and link-local too', () => {
+    for (const shared of ['198.19.0.0/16', '169.254.0.0/16']) {
+      const report = analyseDiscovery(
+        discovery({
+          networks: [
+            { id: 'vpc-1', name: 'a', region: 'eu-west-2', cidrs: [shared] },
+            { id: 'vpc-2', name: 'b', region: 'eu-west-2', cidrs: [shared] },
+          ],
+        })
+      );
+      expect(report.clusters, shared).toEqual([]);
+    }
+  });
+
+  it('never suppresses RFC1918, which is the whole point of the scan', () => {
+    for (const routable of ['10.0.0.0/16', '172.16.0.0/16', '192.168.0.0/16']) {
+      const report = analyseDiscovery(
+        discovery({
+          networks: [
+            { id: 'vpc-1', name: 'a', region: 'eu-west-2', cidrs: [routable] },
+            { id: 'vpc-2', name: 'b', region: 'eu-west-2', cidrs: [routable] },
+          ],
+        })
+      );
+      expect(report.clusters, routable).toHaveLength(1);
+    }
+  });
+
+  it('accepts caller-supplied ranges for org-specific conventions', () => {
+    const base = discovery({
+      networks: [
+        { id: 'vpc-1', name: 'a', region: 'eu-west-2', cidrs: ['192.168.0.0/16'] },
+        { id: 'vpc-2', name: 'b', region: 'eu-west-2', cidrs: ['192.168.0.0/16'] },
+      ],
+    });
+    expect(analyseDiscovery(base).clusters).toHaveLength(1);
+
+    const excluded = analyseDiscovery(base, { sharedRanges: parseSharedRanges(['192.168.0.0/16']) });
+    expect(excluded.clusters).toEqual([]);
+    expect(excluded.suppressed.pairs).toBe(1);
+  });
+});
+
+describe('overlap clustering', () => {
+  it('groups a whole set into one finding rather than every pair', () => {
+    const report = analyseDiscovery(
+      discovery({
+        networks: Array.from({ length: 20 }, (_, i) => ({
+          id: `vpc-${i}`,
+          name: `net-${i}`,
+          region: 'eu-west-2',
+          cidrs: ['10.0.0.0/16'],
+        })),
+      })
+    );
+    // 20 VPCs is 190 pairs saying the same thing. One cluster says it once.
+    expect(report.overlaps).toHaveLength(190);
+    expect(report.clusters).toHaveLength(1);
+    expect(report.clusters[0].members).toHaveLength(20);
+    expect(report.clusters[0].identical).toBe(true);
+  });
+
+  it('groups transitively, so a chain is one finding', () => {
+    // A contains B, B overlaps C, A and C do not touch - still one problem.
+    const report = analyseDiscovery(
+      discovery({
+        networks: [
+          { id: 'vpc-a', name: 'a', region: 'eu-west-2', cidrs: ['10.0.0.0/16'] },
+          { id: 'vpc-b', name: 'b', region: 'eu-west-2', cidrs: ['10.0.0.0/8'] },
+          { id: 'vpc-c', name: 'c', region: 'eu-west-2', cidrs: ['10.200.0.0/16'] },
+        ],
+      })
+    );
+    expect(report.clusters).toHaveLength(1);
+    expect(report.clusters[0].members).toHaveLength(3);
+    expect(report.clusters[0].identical).toBe(false);
+  });
+
+  it('keeps genuinely separate conflicts separate', () => {
+    const report = analyseDiscovery(
+      discovery({
+        networks: [
+          { id: 'vpc-a', name: 'a', region: 'eu-west-2', cidrs: ['10.0.0.0/16'] },
+          { id: 'vpc-b', name: 'b', region: 'eu-west-2', cidrs: ['10.0.0.0/16'] },
+          { id: 'vpc-c', name: 'c', region: 'eu-west-2', cidrs: ['172.16.0.0/16'] },
+          { id: 'vpc-d', name: 'd', region: 'eu-west-2', cidrs: ['172.16.0.0/16'] },
+        ],
+      })
+    );
+    expect(report.clusters).toHaveLength(2);
+    expect(report.clusters.every((c) => c.members.length === 2)).toBe(true);
+  });
+
+  it('leaves a VPC with no overlap out of every cluster', () => {
+    const report = analyseDiscovery(
+      discovery({
+        networks: [
+          { id: 'vpc-a', name: 'a', region: 'eu-west-2', cidrs: ['10.0.0.0/16'] },
+          { id: 'vpc-b', name: 'b', region: 'eu-west-2', cidrs: ['10.0.0.0/16'] },
+          { id: 'vpc-lonely', name: 'lonely', region: 'eu-west-2', cidrs: ['10.99.0.0/16'] },
+        ],
+      })
+    );
+    expect(report.clusters.flatMap((c) => c.members.map((m) => m.networkId))).not.toContain('vpc-lonely');
+  });
+});
+
+describe('parseSharedRanges', () => {
+  it('rejects an unreadable CIDR rather than silently ignoring it', () => {
+    expect(() => parseSharedRanges(['not-a-cidr'])).toThrow(SharedRangeError);
+    expect(() => parseSharedRanges(['10.0.0.0/33'])).toThrow(SharedRangeError);
+  });
+
+  it('normalizes host bits away', () => {
+    expect(parseSharedRanges(['10.0.5.7/16'])[0].cidr).toBe('10.0.0.0/16');
   });
 });
