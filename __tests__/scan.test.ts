@@ -187,12 +187,14 @@ describe('renderDiscoveryManifest', () => {
     expect(manifest).not.toContain('prefix_length');
   });
 
-  it('carries provenance back to AWS in metadata', () => {
+  it('carries provenance back to the source cloud in metadata', () => {
     const entries = parseManifest(renderDiscoveryManifest(report));
+    // Keys are provider-neutral now that Azure exists: a manifest may mix
+    // clouds, so "vpc_id" would be a lie for half of it.
     expect(entries[0].body.metadata).toMatchObject({
       source: 'aws-scan',
-      vpc_id: 'vpc-1',
-      aws_subnet_id: 'subnet-a',
+      network_id: 'vpc-1',
+      source_subnet_id: 'subnet-a',
       availability_zone: 'eu-west-2a',
     });
   });
@@ -385,5 +387,75 @@ describe('parseSharedRanges', () => {
 
   it('normalizes host bits away', () => {
     expect(parseSharedRanges(['10.0.5.7/16'])[0].cidr).toBe('10.0.0.0/16');
+  });
+});
+
+describe('cross-cloud analysis', () => {
+  const aws: Discovery = {
+    provider: 'aws',
+    account: '123456789012',
+    regions: ['eu-west-2'],
+    networks: [{ id: 'vpc-0aa1', name: 'prod', region: 'eu-west-2', cidrs: ['10.0.0.0/16'] }],
+    subnets: [{ id: 'subnet-a', name: 'web', networkId: 'vpc-0aa1', region: 'eu-west-2', cidr: '10.0.1.0/24' }],
+  };
+
+  const azure: Discovery = {
+    provider: 'azure',
+    account: '00000000-1111-2222-3333-444444444444',
+    regions: ['uksouth'],
+    networks: [{ id: 'rg-hub/vnet-hub', name: 'vnet-hub', region: 'uksouth', cidrs: ['10.0.0.0/16'] }],
+    subnets: [{ id: 'rg-hub/vnet-hub/default', name: 'default', networkId: 'rg-hub/vnet-hub', region: 'uksouth', cidr: '10.0.2.0/24' }],
+  };
+
+  it('finds a collision between an AWS VPC and an Azure VNet', () => {
+    // The finding neither cloud can produce: AWS IPAM cannot see Azure, and
+    // Azure cannot see AWS. Scanning them apart finds nothing at all.
+    expect(analyseDiscovery(aws).clusters).toEqual([]);
+    expect(analyseDiscovery(azure).clusters).toEqual([]);
+
+    const report = analyseDiscovery([aws, azure]);
+    expect(report.clusters).toHaveLength(1);
+    expect(report.clusters[0].members.map((m) => m.provider).sort()).toEqual(['aws', 'azure']);
+  });
+
+  it('records every source that contributed', () => {
+    const report = analyseDiscovery([aws, azure]);
+    expect(report.discovery.sources.map((s) => s.provider)).toEqual(['aws', 'azure']);
+    expect(report.discovery.sources[1].account).toBe('00000000-1111-2222-3333-444444444444');
+  });
+
+  it('stamps each network and subnet with the cloud it came from', () => {
+    const report = analyseDiscovery([aws, azure]);
+    expect(report.discovery.networks.map((n) => n.provider)).toEqual(['aws', 'azure']);
+    expect(report.discovery.subnets.every((s) => s.provider)).toBe(true);
+  });
+
+  it('names both clouds in the report when the estate spans them', () => {
+    const output = formatScanReport(analyseDiscovery([aws, azure]));
+    expect(output).toContain('AWS + AZURE');
+    // Provider-neutral noun once more than one cloud is involved: calling an
+    // Azure VNet a VPC would be wrong.
+    expect(output).toContain('networks');
+    expect(output).not.toContain('VPCs and');
+  });
+
+  it('uses each cloud its own noun when only one is present', () => {
+    expect(formatScanReport(analyseDiscovery(aws))).toContain('VPC');
+    expect(formatScanReport(analyseDiscovery(azure))).toContain('VNet');
+  });
+
+  it('still suppresses expected-shared ranges across clouds', () => {
+    // A shared range is shared regardless of which cloud it turns up in.
+    const awsCgnat: Discovery = { ...aws, networks: [{ ...aws.networks[0], cidrs: ['100.64.0.0/16'] }] };
+    const azureCgnat: Discovery = { ...azure, networks: [{ ...azure.networks[0], cidrs: ['100.64.0.0/16'] }] };
+    const report = analyseDiscovery([awsCgnat, azureCgnat]);
+    expect(report.clusters).toEqual([]);
+    expect(report.suppressed.pairs).toBe(1);
+  });
+
+  it('emits one manifest covering both clouds', () => {
+    const entries = parseManifest(renderDiscoveryManifest(analyseDiscovery([aws, azure])));
+    expect(entries).toHaveLength(2);
+    expect(entries.map((e) => e.body.metadata?.source).sort()).toEqual(['aws-scan', 'azure-scan']);
   });
 });

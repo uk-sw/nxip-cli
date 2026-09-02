@@ -1,7 +1,7 @@
 {
   "name": "nxip-cli",
-  "version": "0.3.0",
-  "description": "Scan your AWS estate for overlapping VPC CIDRs and wasted address space, and manage IP allocation with plan/apply - no Terraform required",
+  "version": "0.4.0",
+  "description": "Scan AWS and Azure for overlapping CIDRs and wasted IP space across clouds, and manage IP allocation with plan/apply - no Terraform required",
   "keywords": [
     "ipam",
     "ip-address-management",
@@ -12,7 +12,10 @@
     "terraform",
     "networking",
     "ip-allocation",
-    "network-automation"
+    "network-automation",
+    "azure",
+    "vnet",
+    "multi-cloud"
   ],
   "homepage": "https://nx-ip.com",
   "repository": {
@@ -46,6 +49,9 @@
   "dependencies": {
     "@aws-sdk/client-ec2": "^3.1125.0",
     "@aws-sdk/client-sts": "^3.1125.0",
+    "@azure/arm-network": "^38.0.0",
+    "@azure/arm-resources-subscriptions": "^3.0.0",
+    "@azure/identity": "^4.13.2",
     "yaml": "^2.6.1",
     "zod": "^4.4.3"
   },

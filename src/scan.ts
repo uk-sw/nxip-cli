@@ -4,13 +4,24 @@ import { DEFAULT_SHARED_RANGES, isExpectedlyShared, type SharedRange } from './s
 // What a discovery source hands back. Deliberately not AWS-shaped: the
 // analysis below knows nothing about EC2, so a future Azure or GCP source
 // only has to produce this same shape to reuse all of it.
+export type CloudProvider = 'aws' | 'azure';
+
 export interface DiscoveredNetwork {
-  /** Provider's own id, e.g. vpc-0a1b2c3d. */
+  /** Provider's own id, e.g. vpc-0a1b2c3d, or resourceGroup/vnet-name. */
   id: string;
   name: string | null;
   region: string;
   cidrs: string[];
   isDefault?: boolean;
+  /** Account or subscription this came from. */
+  account?: string | null;
+  /**
+   * Set during merge, not by the source modules. Carried per-network rather
+   * than only on the Discovery so a cross-cloud finding can say which side
+   * of it is AWS and which is Azure - the entire point of scanning both at
+   * once.
+   */
+  provider?: CloudProvider;
 }
 
 export interface DiscoveredSubnet {
@@ -20,14 +31,45 @@ export interface DiscoveredSubnet {
   region: string;
   cidr: string;
   availabilityZone?: string | null;
+  account?: string | null;
+  provider?: CloudProvider;
+}
+
+/** One provider/account pair that contributed to a scan. */
+export interface DiscoverySource {
+  provider: CloudProvider;
+  account: string | null;
+  regions: string[];
 }
 
 export interface Discovery {
-  provider: 'aws';
+  provider: CloudProvider;
   account: string | null;
   regions: string[];
   networks: DiscoveredNetwork[];
   subnets: DiscoveredSubnet[];
+}
+
+/**
+ * Several providers analysed as one estate. This is where cross-cloud
+ * findings come from: no cloud's own IPAM can see another's, so an AWS VPC
+ * and an Azure VNet both claiming 10.0.0.0/16 is invisible to both vendors
+ * and visible here.
+ */
+export interface MergedDiscovery {
+  sources: DiscoverySource[];
+  networks: DiscoveredNetwork[];
+  subnets: DiscoveredSubnet[];
+}
+
+export function mergeDiscoveries(discoveries: Discovery[]): MergedDiscovery {
+  return {
+    sources: discoveries.map((d) => ({ provider: d.provider, account: d.account, regions: d.regions })),
+    // Stamping the provider here rather than in each source module keeps the
+    // scanners ignorant of whether they are running alone or alongside another.
+    networks: discoveries.flatMap((d) => d.networks.map((n) => ({ ...n, provider: n.provider ?? d.provider }))),
+    subnets: discoveries.flatMap((d) => d.subnets.map((s) => ({ ...s, provider: s.provider ?? d.provider }))),
+  };
 }
 
 export interface OverlapMember {
@@ -35,6 +77,7 @@ export interface OverlapMember {
   name: string | null;
   region: string;
   cidr: string;
+  provider?: CloudProvider;
 }
 
 export interface Overlap {
@@ -83,7 +126,7 @@ export interface NetworkSummary {
 }
 
 export interface ScanReport {
-  discovery: Discovery;
+  discovery: MergedDiscovery;
   summaries: NetworkSummary[];
   /** Reported findings, grouped. Empty when nothing genuinely collides. */
   clusters: OverlapCluster[];
@@ -175,7 +218,15 @@ function rangesOf(cidrs: string[], unparseable: string[]): Ipv4Range[] {
  * Turns raw discovery into the things worth telling someone: what they have,
  * which blocks collide, and how much space is sitting unused.
  */
-export function analyseDiscovery(discovery: Discovery, options: AnalyseOptions = {}): ScanReport {
+export function analyseDiscovery(
+  input: Discovery | Discovery[] | MergedDiscovery,
+  options: AnalyseOptions = {}
+): ScanReport {
+  const discovery: MergedDiscovery = Array.isArray(input)
+    ? mergeDiscoveries(input)
+    : 'sources' in input
+      ? input
+      : mergeDiscoveries([input]);
   const sharedRanges = options.sharedRanges ?? DEFAULT_SHARED_RANGES;
   const unparseable: string[] = [];
 
@@ -207,7 +258,7 @@ export function analyseDiscovery(discovery: Discovery, options: AnalyseOptions =
   const blocks = discovery.networks.flatMap((network) =>
     rangesOf(network.cidrs, []).map((range) => ({
       key: `${network.id}|${range.cidr}`,
-      member: { networkId: network.id, name: network.name, region: network.region, cidr: range.cidr },
+      member: { networkId: network.id, name: network.name, region: network.region, cidr: range.cidr, provider: network.provider },
       range,
       networkId: network.id,
     }))
@@ -277,28 +328,44 @@ function label(name: string | null, id: string): string {
   return name ? `${name} (${id})` : id;
 }
 
+/** AWS calls them VPCs, Azure calls them VNets. Say whichever fits. */
+function networkNoun(report: ScanReport, plural = false): string {
+  const providers = new Set(report.discovery.sources.map((s) => s.provider));
+  if (providers.size === 1 && providers.has('aws')) return plural ? 'VPCs' : 'VPC';
+  if (providers.size === 1 && providers.has('azure')) return plural ? 'VNets' : 'VNet';
+  return plural ? 'networks' : 'network';
+}
+
 export function formatScanReport(report: ScanReport): string {
   const lines: string[] = [];
   const { totals, discovery } = report;
 
+  const allRegions = [...new Set(discovery.sources.flatMap((s) => s.regions))];
+
   lines.push('');
-  lines.push(`nxip scan  ${discovery.provider.toUpperCase()}${discovery.account ? ` account ${discovery.account}` : ''}`);
-  lines.push(`${discovery.regions.length} region${discovery.regions.length === 1 ? '' : 's'}: ${discovery.regions.join(', ')}`);
+  lines.push(`nxip scan  ${discovery.sources.map((s) => s.provider.toUpperCase()).join(' + ') || 'no sources'}`);
+  for (const source of discovery.sources) {
+    lines.push(
+      `  ${source.provider.padEnd(6)} ${source.account ?? 'unknown account'}  ` +
+        `${source.regions.length} region${source.regions.length === 1 ? '' : 's'}: ${source.regions.join(', ')}`
+    );
+  }
   lines.push('');
 
   if (totals.networks === 0) {
-    lines.push('No VPCs found. Nothing to analyse.');
+    lines.push(`No ${networkNoun(report, true)} found. Nothing to analyse.`);
     lines.push('');
     return lines.join('\n');
   }
 
-  lines.push(`Found ${totals.networks} VPC${totals.networks === 1 ? '' : 's'} and ${totals.subnets} subnet${totals.subnets === 1 ? '' : 's'}.`);
+  lines.push(`Found ${totals.networks} ${networkNoun(report, totals.networks !== 1)} and ${totals.subnets} subnet${totals.subnets === 1 ? '' : 's'}.`);
   lines.push('');
 
   for (const summary of report.summaries) {
     const { network } = summary;
-    const suffix = network.isDefault ? '  [default VPC]' : '';
-    lines.push(`  ${label(network.name, network.id)}  ${network.region}${suffix}`);
+    const suffix = network.isDefault ? '  [default]' : '';
+    const cloud = discovery.sources.length > 1 && network.provider ? `${network.provider}  ` : '';
+    lines.push(`  ${cloud}${label(network.name, network.id)}  ${network.region}${suffix}`);
     lines.push(`    ${network.cidrs.join(', ')}`);
     lines.push(
       `    ${summary.subnetCount} subnet${summary.subnetCount === 1 ? '' : 's'}, ` +
@@ -310,7 +377,7 @@ export function formatScanReport(report: ScanReport): string {
   if (report.clusters.length > 0) {
     const affected = new Set(report.clusters.flatMap((c) => c.members.map((m) => m.networkId))).size;
     lines.push(
-      `Overlapping address space: ${report.clusters.length} conflict${report.clusters.length === 1 ? '' : 's'} across ${affected} VPCs`
+      `Overlapping address space: ${report.clusters.length} conflict${report.clusters.length === 1 ? '' : 's'} across ${affected} ${networkNoun(report, affected !== 1)}`
     );
     lines.push('');
 
@@ -318,11 +385,12 @@ export function formatScanReport(report: ScanReport): string {
       const cidrs = [...new Set(cluster.members.map((m) => m.cidr))];
       lines.push(
         cluster.identical
-          ? `  ${cidrs[0]} claimed by ${cluster.members.length} VPCs`
-          : `  ${cidrs.join(' / ')} overlap across ${cluster.members.length} VPCs`
+          ? `  ${cidrs[0]} claimed by ${cluster.members.length} ${networkNoun(report, true)}`
+          : `  ${cidrs.join(' / ')} overlap across ${cluster.members.length} ${networkNoun(report, true)}`
       );
       for (const member of cluster.members) {
-        lines.push(`    ${label(member.name, member.networkId).padEnd(34)} ${member.region.padEnd(14)} ${member.cidr}`);
+        const cloud = member.provider ? `${member.provider.padEnd(6)} ` : '';
+        lines.push(`    ${cloud}${label(member.name, member.networkId).padEnd(34)} ${member.region.padEnd(14)} ${member.cidr}`);
       }
       lines.push(`    ${cluster.sharedAddresses.toLocaleString()} addresses in common at most`);
       lines.push('');
@@ -403,11 +471,12 @@ export function renderDiscoveryManifest(report: ScanReport): string {
     lines.push(`    environment: production`);
     lines.push(`    region: ${JSON.stringify(subnet.region)}`);
     lines.push(`    metadata:`);
-    lines.push(`      source: ${JSON.stringify(`${report.discovery.provider}-scan`)}`);
-    lines.push(`      vpc_id: ${JSON.stringify(subnet.networkId)}`);
-    if (network?.name) lines.push(`      vpc_name: ${JSON.stringify(network.name)}`);
+    lines.push(`      source: ${JSON.stringify(`${subnet.provider ?? 'cloud'}-scan`)}`);
+    lines.push(`      network_id: ${JSON.stringify(subnet.networkId)}`);
+    if (network?.name) lines.push(`      network_name: ${JSON.stringify(network.name)}`);
+    if (subnet.account) lines.push(`      account: ${JSON.stringify(subnet.account)}`);
     if (subnet.availabilityZone) lines.push(`      availability_zone: ${JSON.stringify(subnet.availabilityZone)}`);
-    lines.push(`      aws_subnet_id: ${JSON.stringify(subnet.id)}`);
+    lines.push(`      source_subnet_id: ${JSON.stringify(subnet.id)}`);
     lines.push('');
   }
 

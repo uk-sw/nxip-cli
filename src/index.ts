@@ -8,7 +8,8 @@ import { applyManifest, formatApplyResults } from './apply.js';
 import { expandSiteSpec, renderManifest, SiteSpecError } from './site.js';
 import { readVersion } from './version.js';
 import { discoverAws, AwsScanError } from './aws.js';
-import { analyseDiscovery, formatScanReport, renderDiscoveryManifest } from './scan.js';
+import { discoverAzure, AzureScanError } from './azure.js';
+import { analyseDiscovery, formatScanReport, renderDiscoveryManifest, mergeDiscoveries, type Discovery } from './scan.js';
 import { DEFAULT_SHARED_RANGES, parseSharedRanges, SharedRangeError } from './shared-ranges.js';
 
 interface ParsedArgs {
@@ -26,6 +27,9 @@ interface ParsedArgs {
   emitManifest: boolean;
   exclude?: string[];
   includeShared: boolean;
+  providers: string[];
+  subscriptions?: string[];
+  allSubscriptions: boolean;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -37,12 +41,17 @@ function parseArgs(argv: string[]): ParsedArgs {
     json: false,
     emitManifest: false,
     includeShared: false,
+    providers: [],
+    allSubscriptions: false,
   };
 
-  // `scan` takes a provider as its first positional (`nxip scan aws`).
-  if (rest[0] && !rest[0].startsWith('-')) {
-    args.subcommand = rest[0];
+  // `scan` takes one or more providers as leading positionals, so
+  // `nxip scan aws azure` analyses both together as a single estate.
+  for (const candidate of rest) {
+    if (candidate.startsWith('-')) break;
+    args.providers.push(candidate);
   }
+  args.subcommand = args.providers[0];
 
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i];
@@ -70,6 +79,10 @@ function parseArgs(argv: string[]): ParsedArgs {
       args.exclude = (rest[++i] ?? '').split(',').map((r) => r.trim()).filter(Boolean);
     } else if (arg === '--include-shared') {
       args.includeShared = true;
+    } else if (arg === '--subscription') {
+      args.subscriptions = (rest[++i] ?? '').split(',').map((r) => r.trim()).filter(Boolean);
+    } else if (arg === '--all-subscriptions') {
+      args.allSubscriptions = true;
     }
   }
 
@@ -108,8 +121,10 @@ function loadManifest(file: string | undefined) {
 
 function printUsage(stream: 'out' | 'err' = 'err') {
   const write = stream === 'out' ? console.log : console.error;
-  write('Usage: nxip scan aws [--region NAME] [--all-regions] [--profile NAME] [--exclude CIDR,...]');
-  write('                     [--include-shared] [--json] [--emit-manifest] [-o FILE]');
+  write('Usage: nxip scan <aws|azure> [aws|azure] [--exclude CIDR,...] [--include-shared]');
+  write('                     [--json] [--emit-manifest] [-o FILE]');
+  write('         aws:   [--region NAME,...] [--all-regions] [--profile NAME]');
+  write('         azure: [--subscription ID,...] [--all-subscriptions]');
   write('       nxip scaffold -f <site.yaml> [-o <manifest.yaml>]');
   write('       nxip <plan|apply> -f <manifest.yaml> [--api-key KEY] [--url URL] [--auto-approve]');
   write('');
@@ -180,21 +195,38 @@ async function main() {
   // account, using credentials they already have. Nothing is written
   // anywhere and nothing leaves the machine.
   if (args.command === 'scan') {
-    if (args.subcommand !== 'aws') {
-      console.error('Usage: nxip scan aws [--region eu-west-2] [--all-regions] [--profile NAME] [--exclude CIDR,...] [--include-shared] [--json] [--emit-manifest] [-o FILE]');
-      console.error(args.subcommand ? `Unknown provider "${args.subcommand}". Only aws is supported today.` : 'Missing provider. Only aws is supported today.');
+    const SUPPORTED = new Set(['aws', 'azure']);
+    const unknown = args.providers.filter((p) => !SUPPORTED.has(p));
+    if (args.providers.length === 0 || unknown.length > 0) {
+      console.error('Usage: nxip scan <aws|azure> [aws|azure] [provider flags] [--exclude CIDR,...] [--include-shared] [--json] [--emit-manifest] [-o FILE]');
+      console.error(
+        unknown.length > 0
+          ? `Unknown provider${unknown.length === 1 ? '' : 's'} ${unknown.map((u) => `"${u}"`).join(', ')}. Supported: aws, azure.`
+          : 'Missing provider. Supported: aws, azure.'
+      );
       process.exitCode = 1;
       return;
     }
 
-    let discovery;
-    try {
-      discovery = await discoverAws({ regions: args.regions, allRegions: args.allRegions, profile: args.profile });
-    } catch (error) {
-      console.error(error instanceof AwsScanError ? error.message : `AWS scan failed: ${error instanceof Error ? error.message : String(error)}`);
-      process.exitCode = 1;
-      return;
+    // Each provider is scanned separately then merged, so one estate is
+    // analysed as a whole. That is where cross-cloud findings come from: no
+    // cloud's own IPAM can see another's.
+    const discoveries: Discovery[] = [];
+    for (const provider of args.providers) {
+      try {
+        discoveries.push(
+          provider === 'aws'
+            ? await discoverAws({ regions: args.regions, allRegions: args.allRegions, profile: args.profile })
+            : await discoverAzure({ subscriptions: args.subscriptions, allSubscriptions: args.allSubscriptions })
+        );
+      } catch (error) {
+        const known = error instanceof AwsScanError || error instanceof AzureScanError;
+        console.error(known ? (error as Error).message : `${provider} scan failed: ${error instanceof Error ? error.message : String(error)}`);
+        process.exitCode = 1;
+        return;
+      }
     }
+    const discovery = mergeDiscoveries(discoveries);
 
     // Ranges where overlap is expected by design. Defaults cover the ones
     // cloud providers themselves recommend reusing (see shared-ranges.ts);

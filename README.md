@@ -3,7 +3,7 @@
 **See what IP space you actually have, before you commit to anything:**
 
 ```bash
-npx nxip-cli scan aws
+npx nxip-cli scan aws azure
 ```
 
 Read-only, no nxip account, no signup. It uses the AWS credentials you
@@ -35,9 +35,26 @@ Overlap that is deliberate, like the `100.64.0.0/10` pod ranges AWS
 recommends reusing across EKS clusters, is recognized and set aside rather
 than reported. See [below](#overlaps-that-are-supposed-to-be-there).
 
-Overlapping VPC CIDRs are the kind of thing nobody discovers until the day
-they try to peer two networks, or acquire a company, and by then the fix is
+Overlapping CIDRs are the kind of thing nobody discovers until the day they
+try to peer two networks, or acquire a company, and by then the fix is
 renumbering production. This finds them in about ten seconds.
+
+**Scan more than one cloud at once and they are analysed as a single
+estate.** That matters because no cloud can see another: AWS IPAM has no
+idea your Azure hub VNet exists, and Azure has no idea about your VPCs. An
+AWS VPC and an Azure VNet both claiming `10.0.0.0/16` is invisible to both
+vendors, and visible here.
+
+```
+### aws alone:   0 conflicts
+### azure alone: 0 conflicts
+
+Overlapping address space: 1 conflict across 2 networks
+
+  10.0.0.0/16 claimed by 2 networks
+    azure  vnet-hub (rg-hub/vnet-hub)         uksouth        10.0.0.0/16
+    aws    prod-euw2 (vpc-0aa1)               eu-west-2      10.0.0.0/16
+```
 
 ## The rest of it
 
@@ -69,28 +86,34 @@ npx nxip-cli scan aws
 `scan` and `scaffold` need no nxip account. `plan` and `apply` need an API
 key, free at [nx-ip.com](https://nx-ip.com/signup).
 
-## Scanning an AWS account (`nxip scan`)
+## Scanning a cloud account (`nxip scan`)
 
 ```bash
-nxip scan aws                          # your default region
-nxip scan aws --region eu-west-2,us-east-1
-nxip scan aws --all-regions            # every region you can reach
-nxip scan aws --profile my-sso-profile
-nxip scan aws --exclude 192.168.0.0/16 # ranges you share on purpose
-nxip scan aws --include-shared         # report even the expected overlaps
-nxip scan aws --json                   # machine-readable, for piping
+nxip scan aws                          # one cloud
+nxip scan aws azure                    # both, analysed as one estate
+nxip scan aws --all-regions
+nxip scan azure --all-subscriptions
+nxip scan aws azure --exclude 192.168.0.0/16
+nxip scan aws azure --json             # machine-readable, for piping
 ```
 
-Needs read-only `ec2:DescribeVpcs` and `ec2:DescribeSubnets`. Credentials
-come from the standard AWS chain, so whatever already works for the AWS CLI
-works here: environment variables, a named profile, SSO, or an instance
-role.
+Provider flags:
+
+| Cloud | Flags | Permissions | Credentials |
+|---|---|---|---|
+| `aws` | `--region NAME,...`, `--all-regions`, `--profile NAME` | read-only `ec2:DescribeVpcs`, `ec2:DescribeSubnets` | the standard AWS chain: environment, named profile, SSO, instance role |
+| `azure` | `--subscription ID,...`, `--all-subscriptions` | read access to `Microsoft.Network/virtualNetworks`, which the built-in **Reader** role covers | `DefaultAzureCredential`: `az login`, environment variables, managed or workload identity |
+
+Both use whatever credentials you already have rather than asking you to
+mint something new. With no `--subscription`, Azure enumerates every
+enabled subscription the identity can see.
 
 What it reports:
 
-- **Every VPC and subnet**, with how much of each VPC is actually carved up
-- **Overlapping address space** between VPCs, across regions, ranked by how
-  much they share. This is the finding that matters
+- **Every network and subnet**, with how much of each is actually carved up
+- **Overlapping address space** between networks, across regions, accounts,
+  subscriptions and clouds, ranked by how much they share. This is the
+  finding that matters
 - **Unused space**, because a `/16` that is 3% carved is a decision someone
   made once and never revisited
 
@@ -155,10 +178,17 @@ finding even where A and C do not touch.
 
 ### Limits worth knowing
 
-IPv6 blocks are listed but not overlap-analysed. AWS allocates IPv6 from
-its own globally unique space, so the collision problem that makes this
-worth running simply does not arise there in the way it does for RFC1918
-IPv4.
+IPv6 blocks are listed but not overlap-analysed. Cloud providers allocate
+IPv6 from their own globally unique space, so the collision problem that
+makes this worth running simply does not arise there in the way it does for
+RFC1918 IPv4.
+
+GCP is not supported yet, and it is not simply another module. In GCP only
+subnets carry CIDR ranges, the VPC network itself has none and is global
+rather than regional, so the per-network analysis here has no equivalent to
+measure. It also deliberately permits subnets in different regions of the
+same VPC to share a range, which is a second variant of the
+expected-overlap problem. Worth doing properly rather than approximating.
 
 The scan reads VPCs and subnets, not what is running inside them. It can
 tell you a `/16` is 3% carved; it cannot yet tell you the carved 3% is
