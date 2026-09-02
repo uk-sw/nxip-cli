@@ -1,6 +1,6 @@
 {
   "name": "nxip-cli",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Scan your AWS estate for overlapping VPC CIDRs and wasted address space, and manage IP allocation with plan/apply - no Terraform required",
   "keywords": [
     "ipam",

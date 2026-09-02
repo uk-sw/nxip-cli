@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { contains, intToIpv4, ipv4ToInt, overlapKind, parseIpv4Cidr, rangesOverlap, unionSize } from '../src/cidr.js';
 
 describe('ipv4ToInt', () => {
@@ -126,5 +127,14 @@ describe('unionSize', () => {
 
   it('merges adjacent ranges without double counting the join', () => {
     expect(unionSize([parseIpv4Cidr('10.0.0.0/24')!, parseIpv4Cidr('10.0.1.0/24')!])).toBe(512);
+  });
+});
+
+describe('readVersion', () => {
+  it('reports the version from package.json, not a hardcoded constant', async () => {
+    const { readVersion } = await import('../src/version.js');
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf-8'));
+    expect(readVersion()).toBe(pkg.version);
+    expect(readVersion()).not.toBe('unknown');
   });
 });

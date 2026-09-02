@@ -6,6 +6,7 @@ import { ManifestError, parseManifest } from './manifest.js';
 import { formatPlan, planManifest } from './plan.js';
 import { applyManifest, formatApplyResults } from './apply.js';
 import { expandSiteSpec, renderManifest, SiteSpecError } from './site.js';
+import { readVersion } from './version.js';
 import { discoverAws, AwsScanError } from './aws.js';
 import { analyseDiscovery, formatScanReport, renderDiscoveryManifest } from './scan.js';
 
@@ -109,6 +110,7 @@ function printUsage(stream: 'out' | 'err' = 'err') {
 
 const COMMANDS = new Set(['scan', 'scaffold', 'plan', 'apply']);
 
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
 
@@ -121,15 +123,19 @@ async function main() {
     return;
   }
 
+  // Before the unknown-command check, not after: these are flags rather than
+  // commands, so COMMANDS will never contain them and they would otherwise
+  // always fall through to "Unknown command".
+  if (args.command === '--version' || args.command === '-v' || args.command === 'version') {
+    console.log(readVersion());
+    return;
+  }
+
   if (!COMMANDS.has(args.command)) {
     console.error(`Unknown command "${args.command}".`);
     console.error('');
     printUsage();
     process.exitCode = 1;
-    return;
-  }
-
-  if (args.command === '--version' || args.command === '-v') {
     return;
   }
 
