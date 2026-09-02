@@ -1,9 +1,21 @@
 name: Release
 
-# Publishing is tag-triggered so the npm token lives in repository secrets
-# and never on a laptop, matching how the Terraform provider already
-# releases. To cut a release: bump the version in package.json, commit,
-# then `git tag v0.2.0 && git push --tags`.
+# Publishing is tag-triggered, and uses npm trusted publishing (OIDC) rather
+# than a stored NPM_TOKEN. GitHub mints a short-lived credential per run, so
+# there is no long-lived secret in repository settings to leak or rotate, and
+# no 90-day granular-token expiry to remember every quarter.
+#
+# This requires a one-time setup that cannot be done from here, because npm
+# will only accept a trusted-publisher configuration for a package that
+# already exists:
+#
+#   1. Publish once by hand:  npm login && npm publish
+#   2. On npmjs.com, package settings -> Trusted Publisher -> GitHub Actions,
+#      repository uk-sw/nxip-cli, workflow release.yml
+#   3. Every release after that is just: bump version, tag, push
+#
+# To cut a release: bump the version in package.json, commit, then
+# `git tag v0.2.1 && git push --tags`.
 on:
   push:
     tags:
@@ -14,16 +26,26 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      # Lets npm record a verified link back to the commit and workflow that
-      # produced the tarball, so anyone installing can check where it came from.
+      # Required, and load-bearing: this is what authenticates the publish
+      # under trusted publishing, as well as what lets npm record a verified
+      # link back to the commit and workflow that produced the tarball.
       id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Trusted publishing needs Node >= 22.14.0 and npm >= 11.5.1. CI
+          # tests on 20; this job is the publisher, not a compatibility
+          # check, so it deliberately runs newer.
+          node-version: 24
           cache: npm
           registry-url: https://registry.npmjs.org
+
+      # Node 22 still ships npm 10.x, which cannot do OIDC publishing at all,
+      # and the failure it gives is not obvious. Pinning the npm version
+      # explicitly makes this independent of whatever npm the Node image
+      # happens to bundle.
+      - run: npm install -g npm@latest
 
       - run: npm ci
 
@@ -46,6 +68,7 @@ jobs:
           fi
           echo "Publishing $PKG_VERSION"
 
+      # No NODE_AUTH_TOKEN. Authentication comes from the OIDC token minted
+      # by the id-token permission above, which is why that permission is
+      # required rather than merely nice for provenance.
       - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
