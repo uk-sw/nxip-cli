@@ -274,13 +274,17 @@ async function main() {
     }
 
     // The pitch goes to stderr so it never contaminates piped JSON or a
-    // manifest being redirected to a file.
+    // manifest being redirected to a file. It names the literal next command
+    // rather than a bare URL: this fires at the moment someone has just seen
+    // their own estate, so sending them to a homepage to re-orient wastes it.
     if (!args.emitManifest && !args.json) {
-      if (report.clusters.length > 0) {
-        console.error('Want these checked before the next terraform apply, not after? https://nx-ip.com');
-      } else {
-        console.error('Want this tracked continuously as your estate changes? https://nx-ip.com');
-      }
+      console.error(
+        report.clusters.length > 0
+          ? '\nWant these checked before the next terraform apply, not after?'
+          : '\nWant this tracked continuously as your estate changes?'
+      );
+      console.error(`Load it in:  npx nxip-cli scan ${args.providers.join(' ')} --emit-manifest -o discovered.yaml`);
+      console.error('Guide:       https://nx-ip.com/docs/discovery#getting-it-into-nxip');
     }
     return;
   }
