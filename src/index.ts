@@ -9,7 +9,7 @@ import { expandSiteSpec, renderManifest, SiteSpecError } from './site.js';
 import { readVersion } from './version.js';
 import { discoverAws, AwsScanError } from './aws.js';
 import { discoverAzure, AzureScanError } from './azure.js';
-import { analyseDiscovery, formatScanReport, renderDiscoveryManifest, mergeDiscoveries, type Discovery } from './scan.js';
+import { analyseDiscovery, formatScanReport, renderDiscoveryManifest, mergeDiscoveries, redactDiscovery, type Discovery } from './scan.js';
 import { DEFAULT_SHARED_RANGES, parseSharedRanges, SharedRangeError } from './shared-ranges.js';
 
 interface ParsedArgs {
@@ -27,6 +27,7 @@ interface ParsedArgs {
   emitManifest: boolean;
   exclude?: string[];
   includeShared: boolean;
+  redact: boolean;
   providers: string[];
   subscriptions?: string[];
   allSubscriptions: boolean;
@@ -41,6 +42,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     json: false,
     emitManifest: false,
     includeShared: false,
+    redact: false,
     providers: [],
     allSubscriptions: false,
   };
@@ -79,6 +81,8 @@ function parseArgs(argv: string[]): ParsedArgs {
       args.exclude = (rest[++i] ?? '').split(',').map((r) => r.trim()).filter(Boolean);
     } else if (arg === '--include-shared') {
       args.includeShared = true;
+    } else if (arg === '--redact') {
+      args.redact = true;
     } else if (arg === '--subscription') {
       args.subscriptions = (rest[++i] ?? '').split(',').map((r) => r.trim()).filter(Boolean);
     } else if (arg === '--all-subscriptions') {
@@ -122,7 +126,7 @@ function loadManifest(file: string | undefined): Manifest | null {
 function printUsage(stream: 'out' | 'err' = 'err') {
   const write = stream === 'out' ? console.log : console.error;
   write('Usage: nxip scan <aws|azure> [aws|azure] [--exclude CIDR,...] [--include-shared]');
-  write('                     [--json] [--emit-manifest] [-o FILE]');
+  write('                     [--redact] [--json] [--emit-manifest] [-o FILE]');
   write('         aws:   [--region NAME,...] [--all-regions] [--profile NAME]');
   write('         azure: [--subscription ID,...] [--all-subscriptions]');
   write('       nxip scaffold -f <site.yaml> [-o <manifest.yaml>]');
@@ -198,7 +202,7 @@ async function main() {
     const SUPPORTED = new Set(['aws', 'azure']);
     const unknown = args.providers.filter((p) => !SUPPORTED.has(p));
     if (args.providers.length === 0 || unknown.length > 0) {
-      console.error('Usage: nxip scan <aws|azure> [aws|azure] [provider flags] [--exclude CIDR,...] [--include-shared] [--json] [--emit-manifest] [-o FILE]');
+      console.error('Usage: nxip scan <aws|azure> [aws|azure] [provider flags] [--exclude CIDR,...] [--include-shared] [--redact] [--json] [--emit-manifest] [-o FILE]');
       console.error(
         unknown.length > 0
           ? `Unknown provider${unknown.length === 1 ? '' : 's'} ${unknown.map((u) => `"${u}"`).join(', ')}. Supported: aws, azure.`
@@ -226,7 +230,9 @@ async function main() {
         return;
       }
     }
-    const discovery = mergeDiscoveries(discoveries);
+    // Redaction happens before analysis, not after rendering, so every
+    // downstream output sees the same pseudonymised data.
+    const discovery = args.redact ? redactDiscovery(mergeDiscoveries(discoveries)) : mergeDiscoveries(discoveries);
 
     // Ranges where overlap is expected by design. Defaults cover the ones
     // cloud providers themselves recommend reusing (see shared-ranges.ts);
@@ -249,6 +255,12 @@ async function main() {
       : args.json
         ? `${JSON.stringify(report, null, 2)}\n`
         : formatScanReport(report);
+
+    if (args.emitManifest && args.redact) {
+      console.error(
+        'Note: --redact replaces the network and subnet ids this manifest records as provenance, so the link back to the real resources is lost. Useful for sharing an example, not for loading your own estate.'
+      );
+    }
 
     if (args.output) {
       writeFileSync(args.output, output, 'utf-8');

@@ -94,6 +94,7 @@ nxip scan aws azure                    # both, analysed as one estate
 nxip scan aws --all-regions
 nxip scan azure --all-subscriptions
 nxip scan aws azure --exclude 192.168.0.0/16
+nxip scan aws azure --redact           # safe to share
 nxip scan aws azure --json             # machine-readable, for piping
 ```
 
@@ -177,6 +178,52 @@ Ignored 300 overlaps in ranges that are expected to be shared:
 
 Add your own conventions with `--exclude 192.168.0.0/16,172.20.0.0/14`, or
 turn the whole thing off with `--include-shared`.
+
+### Sharing a report safely (`--redact`)
+
+A scan report names your accounts, subscriptions, VPCs and VNets. None of
+that is secret, but together it is an inventory of your estate, and the most
+useful thing to do with a finding is usually to show someone.
+
+`--redact` replaces every identifier with a stable pseudonym:
+
+```
+nxip scan  AWS + AZURE   [redacted]
+  aws    aws-account-1  1 region: eu-west-2
+  azure  azure-account-1  1 region: uksouth
+  Identifiers replaced with stable pseudonyms. Address space, regions
+  and every finding are unchanged.
+
+Overlapping address space: 1 conflict across 2 networks
+
+  10.0.0.0/16 claimed by 2 networks
+    aws    network-1                          eu-west-2      10.0.0.0/16
+    azure  network-2                          uksouth        10.0.0.0/16
+```
+
+**How it works.** Not a regex pass over the output, and not a library. It is
+a transform over the discovery data before any analysis runs, so the fields
+it touches are known rather than guessed. Scrubbing rendered text would mean
+pattern-matching what an identifier looks like, which both over-matches (a
+twelve-digit number might be an address count) and under-matches (a VPC named
+after a customer looks like nothing in particular).
+
+**Pseudonyms are stable, not blanked.** Replacing everything with `REDACTED`
+would destroy the only thing worth sharing, since a conflict is the claim
+that *these two* networks collide. `network-1` and `network-2` keep that
+readable.
+
+**What is deliberately kept**: CIDRs, regions, families and every count.
+Without the address space there is no finding left to show, and private
+ranges are weakly identifying at best - a great many organizations use
+`10.0.0.0/16`, whereas an account id identifies exactly one. If your networks
+carry publicly routable ranges that reasoning does not hold, so read before
+you post.
+
+Combining `--redact` with `--emit-manifest` is allowed but rarely what you
+want: the manifest records network and subnet ids as provenance, and
+pseudonymising them severs the link back to the real resources. The CLI says
+so when you do it.
 
 ### Findings are grouped, not listed pairwise
 

@@ -342,13 +342,24 @@ export function formatScanReport(report: ScanReport): string {
 
   const allRegions = [...new Set(discovery.sources.flatMap((s) => s.regions))];
 
+  // A reader cannot tell a pseudonym from a real name, so the report says
+  // which it is rather than leaving them to guess.
+  const redacted = discovery.networks.some((n) => n.id.startsWith('network-') && n.name === null);
+
   lines.push('');
-  lines.push(`nxip scan  ${discovery.sources.map((s) => s.provider.toUpperCase()).join(' + ') || 'no sources'}`);
+  lines.push(
+    `nxip scan  ${discovery.sources.map((s) => s.provider.toUpperCase()).join(' + ') || 'no sources'}` +
+      (redacted ? '   [redacted]' : '')
+  );
   for (const source of discovery.sources) {
     lines.push(
       `  ${source.provider.padEnd(6)} ${source.account ?? 'unknown account'}  ` +
         `${source.regions.length} region${source.regions.length === 1 ? '' : 's'}: ${source.regions.join(', ')}`
     );
+  }
+  if (redacted) {
+    lines.push('  Identifiers replaced with stable pseudonyms. Address space, regions');
+    lines.push('  and every finding are unchanged.');
   }
   lines.push('');
 
@@ -652,4 +663,77 @@ export function renderDiscoveryManifest(report: ScanReport): string {
   }
 
   return lines.join('\n');
+}
+
+/**
+ * Replaces identifying fields with stable pseudonyms, so a report can be
+ * shared without handing over an inventory of the estate that produced it.
+ *
+ * This is a structural transform over the discovery data, deliberately not a
+ * regex pass over the rendered text. Scrubbing output after the fact means
+ * guessing what an identifier looks like: a twelve-digit number might be an
+ * account id or an address count, and a network named after a customer is
+ * invisible to any pattern. Here the fields are known because this codebase
+ * defines them, so nothing is guessed and nothing is missed.
+ *
+ * Pseudonyms are stable within a run rather than blanked. Replacing every id
+ * with "REDACTED" would destroy the only thing worth sharing: a conflict is
+ * the statement that *these two* networks collide, and that is unreadable if
+ * both are called the same thing.
+ *
+ * What is kept, and why: CIDRs, regions and families all survive, because
+ * without them there is no finding left to show. Private address space is
+ * also weakly identifying at best - a great many organizations use
+ * 10.0.0.0/16 - whereas an account id identifies exactly one. If an estate
+ * carries publicly routable ranges in its networks, that reasoning does not
+ * hold, and the report is worth reading before sharing regardless.
+ */
+export function redactDiscovery(discovery: MergedDiscovery): MergedDiscovery {
+  const accounts = new Map<string, string>();
+  const networks = new Map<string, string>();
+  const subnets = new Map<string, string>();
+
+  // Counted per prefix, not per map: sharing one counter across providers
+  // produces "azure-account-2" for the only Azure account in the report,
+  // which reads like a missing account-1.
+  const counters = new Map<string, number>();
+  const pseudonym = (map: Map<string, string>, key: string, prefix: string): string => {
+    const existing = map.get(key);
+    if (existing) return existing;
+    const next = (counters.get(prefix) ?? 0) + 1;
+    counters.set(prefix, next);
+    const label = `${prefix}-${next}`;
+    map.set(key, label);
+    return label;
+  };
+
+  const accountFor = (provider: CloudProvider | undefined, account: string | null | undefined): string | null => {
+    if (!account) return null;
+    return pseudonym(accounts, account, `${provider ?? 'cloud'}-account`);
+  };
+
+  return {
+    sources: discovery.sources.map((source) => ({
+      provider: source.provider,
+      account: accountFor(source.provider, source.account),
+      regions: source.regions,
+    })),
+    networks: discovery.networks.map((network) => ({
+      ...network,
+      id: pseudonym(networks, network.id, 'network'),
+      // Dropped rather than pseudonymised: the id already carries a stable
+      // label, and a second one adds nothing but noise.
+      name: null,
+      account: accountFor(network.provider, network.account),
+    })),
+    subnets: discovery.subnets.map((subnet) => ({
+      ...subnet,
+      id: pseudonym(subnets, subnet.id, 'subnet'),
+      name: null,
+      // Must use the same map as the networks above, or a subnet would point
+      // at a network id that appears nowhere in the report.
+      networkId: pseudonym(networks, subnet.networkId, 'network'),
+      account: accountFor(subnet.provider, subnet.account),
+    })),
+  };
 }
