@@ -1,4 +1,4 @@
-import type { NxipSubnetBody, PreviewResult } from './types.js';
+import type { NxipPool, NxipPoolBody, NxipSubnetBody, PreviewResult } from './types.js';
 
 export interface NxipClientOptions {
   apiKey: string;
@@ -29,14 +29,19 @@ export class NxipApiError extends Error {
   }
 }
 
-async function request<T>(options: NxipClientOptions, path: string, body: unknown): Promise<T> {
+async function request<T>(
+  options: NxipClientOptions,
+  path: string,
+  body: unknown,
+  method: 'GET' | 'POST' = 'POST'
+): Promise<T> {
   const response = await fetch(`${options.baseUrl}${path}`, {
-    method: 'POST',
+    method,
     headers: {
       'content-type': 'application/json',
       [API_KEY_HEADER]: options.apiKey,
     },
-    body: JSON.stringify(body),
+    body: method === 'GET' ? undefined : JSON.stringify(body),
   });
 
   const text = await response.text();
@@ -71,4 +76,19 @@ export function previewSubnet(options: NxipClientOptions, body: NxipSubnetBody):
 /** Calls the real POST /v1/subnets - only ever invoked after a preview came back wouldSucceed: true. */
 export function createSubnet(options: NxipClientOptions, body: NxipSubnetBody): Promise<{ id: string; cidr: string }> {
   return request(options, '/v1/subnets', body);
+}
+
+/** Calls POST /v1/pools. Pools have no preview endpoint, unlike subnets. */
+export function createPool(options: NxipClientOptions, body: NxipPoolBody): Promise<NxipPool> {
+  return request(options, '/v1/pools', body);
+}
+
+/**
+ * Lists existing pools so a plan can distinguish "will be created" from
+ * "already there". There is no pool preview endpoint, so this read is the
+ * only way to say anything truthful about a pool before applying it.
+ */
+export async function listPools(options: NxipClientOptions): Promise<NxipPool[]> {
+  const page = await request<{ data: NxipPool[] }>(options, '/v1/pools?limit=100', undefined, 'GET');
+  return page.data ?? [];
 }

@@ -2,9 +2,9 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { resolveClientOptions } from './client.js';
-import { ManifestError, parseManifest } from './manifest.js';
-import { formatPlan, planManifest } from './plan.js';
-import { applyManifest, formatApplyResults } from './apply.js';
+import { ManifestError, parseFullManifest, type Manifest } from './manifest.js';
+import { formatPlan, planManifest, planPools, formatPoolPlan, annotateAgainstPools, formatAnnotatedPlan } from './plan.js';
+import { applyFullManifest, formatApplyResults } from './apply.js';
 import { expandSiteSpec, renderManifest, SiteSpecError } from './site.js';
 import { readVersion } from './version.js';
 import { discoverAws, AwsScanError } from './aws.js';
@@ -99,7 +99,7 @@ async function confirm(message: string): Promise<boolean> {
   }
 }
 
-function loadManifest(file: string | undefined) {
+function loadManifest(file: string | undefined): Manifest | null {
   if (!file) {
     console.error('Missing required -f/--file <manifest.yaml>');
     process.exitCode = 1;
@@ -107,7 +107,7 @@ function loadManifest(file: string | undefined) {
   }
   try {
     const raw = readFileSync(file, 'utf-8');
-    return parseManifest(raw);
+    return parseFullManifest(raw);
   } catch (error) {
     if (error instanceof ManifestError) {
       console.error(error.message);
@@ -282,20 +282,26 @@ async function main() {
   }
 
   if (args.command === 'plan') {
-    const entries = loadManifest(args.file);
-    if (!entries) return;
-    const planned = await planManifest(options, entries);
-    console.log(formatPlan(planned));
+    const manifest = loadManifest(args.file);
+    if (!manifest) return;
+    const poolPlan = await planPools(options, manifest.pools);
+    if (poolPlan.length > 0) console.log(formatPoolPlan(poolPlan));
+    const planned = await planManifest(options, manifest.subnets);
+    // When the manifest declares pools, a plain subnet plan reads as all
+    // failures, since the pools do not exist yet.
+    console.log(poolPlan.length > 0 ? formatAnnotatedPlan(annotateAgainstPools(planned, poolPlan)) : formatPlan(planned));
     return;
   }
 
   if (args.command === 'apply') {
-    const entries = loadManifest(args.file);
-    if (!entries) return;
+    const manifest = loadManifest(args.file);
+    if (!manifest) return;
 
     if (!args.autoApprove) {
-      const planned = await planManifest(options, entries);
-      console.log(formatPlan(planned));
+      const poolPlan = await planPools(options, manifest.pools);
+      if (poolPlan.length > 0) console.log(formatPoolPlan(poolPlan));
+      const planned = await planManifest(options, manifest.subnets);
+      console.log(poolPlan.length > 0 ? formatAnnotatedPlan(annotateAgainstPools(planned, poolPlan)) : formatPlan(planned));
       const approved = await confirm('Do you want to perform these actions?');
       if (!approved) {
         console.log('Apply cancelled.');
@@ -303,7 +309,7 @@ async function main() {
       }
     }
 
-    const results = await applyManifest(options, entries);
+    const results = await applyFullManifest(options, manifest);
     console.log(formatApplyResults(results));
     if (results.some((r) => r.outcome === 'failed')) {
       process.exitCode = 1;

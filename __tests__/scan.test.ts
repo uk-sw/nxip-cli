@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { analyseDiscovery, formatScanReport, renderDiscoveryManifest, type Discovery } from '../src/scan.js';
+import { analyseDiscovery, formatScanReport, renderDiscoveryManifest, proposePools, type Discovery } from '../src/scan.js';
 import { parseSharedRanges, SharedRangeError } from '../src/shared-ranges.js';
-import { parseManifest } from '../src/manifest.js';
+import { parseManifest, parseFullManifest } from '../src/manifest.js';
 
 function discovery(overrides: Partial<Discovery> = {}): Discovery {
   return {
@@ -457,5 +457,111 @@ describe('cross-cloud analysis', () => {
     const entries = parseManifest(renderDiscoveryManifest(analyseDiscovery([aws, azure])));
     expect(entries).toHaveLength(2);
     expect(entries.map((e) => e.body.metadata?.source).sort()).toEqual(['aws-scan', 'azure-scan']);
+  });
+});
+
+describe('pool proposal (--emit-manifest)', () => {
+  // The constraint that makes this hard: nxip allows one pool per
+  // (environment, region, family), and real accounts put several networks
+  // in one region.
+  const crowded = discovery({
+    networks: [
+      { id: 'vpc-1', name: 'prod', region: 'eu-west-2', cidrs: ['10.0.0.0/16'] },
+      { id: 'vpc-2', name: 'staging', region: 'eu-west-2', cidrs: ['10.1.0.0/16'] },
+      { id: 'vpc-3', name: 'data', region: 'us-east-1', cidrs: ['10.2.0.0/16'] },
+    ],
+    subnets: [
+      { id: 's1', name: 'prod-web', networkId: 'vpc-1', region: 'eu-west-2', cidr: '10.0.1.0/24' },
+      { id: 's2', name: 'stg-web', networkId: 'vpc-2', region: 'eu-west-2', cidr: '10.1.1.0/24' },
+      { id: 's3', name: 'data-a', networkId: 'vpc-3', region: 'us-east-1', cidr: '10.2.1.0/24' },
+    ],
+  });
+
+  it('proposes one pool per network block', () => {
+    const pools = proposePools(analyseDiscovery(crowded));
+    expect(pools).toHaveLength(3);
+    expect(pools.map((p) => p.cidr).sort()).toEqual(['10.0.0.0/16', '10.1.0.0/16', '10.2.0.0/16']);
+  });
+
+  it('keeps environments unique where a region holds several networks', () => {
+    const pools = proposePools(analyseDiscovery(crowded));
+    const euw2 = pools.filter((p) => p.region === 'eu-west-2');
+    expect(euw2).toHaveLength(2);
+    // Same region, same family - so these must differ or the second collides.
+    expect(new Set(euw2.map((p) => p.environment)).size).toBe(2);
+    expect(euw2.every((p) => p.derivedEnvironment)).toBe(true);
+  });
+
+  it('leaves a region with one network on the production default', () => {
+    const pools = proposePools(analyseDiscovery(crowded));
+    const solo = pools.find((p) => p.region === 'us-east-1')!;
+    expect(solo.environment).toBe('production');
+    expect(solo.derivedEnvironment).toBe(false);
+  });
+
+  it('produces no colliding (environment, region, family) key anywhere', () => {
+    // The property the whole design exists to guarantee. If this fails, the
+    // emitted file cannot be applied.
+    const pools = proposePools(analyseDiscovery(crowded));
+    const keys = pools.map((p) => `${p.environment}|${p.region}|IPV4`);
+    expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  it('disambiguates networks that share a Name tag', () => {
+    const duplicated = discovery({
+      networks: [
+        { id: 'vpc-1', name: 'app', region: 'eu-west-2', cidrs: ['10.0.0.0/16'] },
+        { id: 'vpc-2', name: 'app', region: 'eu-west-2', cidrs: ['10.1.0.0/16'] },
+      ],
+    });
+    const pools = proposePools(analyseDiscovery(duplicated));
+    expect(new Set(pools.map((p) => p.environment)).size).toBe(2);
+  });
+
+  it('gives each subnet the environment of the pool that contains it', () => {
+    const manifest = parseFullManifest(renderDiscoveryManifest(analyseDiscovery(crowded)));
+    for (const subnet of manifest.subnets) {
+      const pool = manifest.pools.find((p) => p.body.environment === subnet.body.environment);
+      // Without this the two halves of the file disagree and every subnet
+      // fails to route, which is exactly the gap this work closed.
+      expect(pool, `no pool for ${subnet.name}`).toBeDefined();
+      expect(pool!.body.region).toBe(subnet.body.region);
+    }
+  });
+
+  it('emits a manifest that parses as both pools and subnets', () => {
+    const manifest = parseFullManifest(renderDiscoveryManifest(analyseDiscovery(crowded)));
+    expect(manifest.pools).toHaveLength(3);
+    expect(manifest.subnets).toHaveLength(3);
+    expect(manifest.subnets[0].body.cidr).toBeDefined();
+    expect(manifest.subnets[0].body.prefixLength).toBeUndefined();
+  });
+
+  it('attributes a subnet to the most specific containing block', () => {
+    const nested = discovery({
+      networks: [{ id: 'vpc-1', name: 'multi', region: 'eu-west-2', cidrs: ['10.0.0.0/8', '10.0.0.0/16'] }],
+      subnets: [{ id: 's1', name: 'inner', networkId: 'vpc-1', region: 'eu-west-2', cidr: '10.0.1.0/24' }],
+    });
+    const manifest = parseFullManifest(renderDiscoveryManifest(analyseDiscovery(nested)));
+    const pool = manifest.pools.find((p) => p.body.environment === manifest.subnets[0].body.environment)!;
+    expect(pool.body.cidr).toBe('10.0.0.0/16');
+  });
+
+  it('comments out a subnet that falls outside every block its network declares', () => {
+    const orphaned = discovery({
+      networks: [{ id: 'vpc-1', name: 'prod', region: 'eu-west-2', cidrs: ['10.0.0.0/16'] }],
+      subnets: [{ id: 's1', name: 'stray', networkId: 'vpc-1', region: 'eu-west-2', cidr: '192.168.5.0/24' }],
+    });
+    const rendered = renderDiscoveryManifest(analyseDiscovery(orphaned));
+    expect(rendered).toContain('Left out');
+    expect(rendered).toContain('192.168.5.0/24');
+    // Left out rather than emitted broken: it would fail to route anyway.
+    expect(parseFullManifest(rendered).subnets).toHaveLength(0);
+  });
+
+  it('says why an environment was derived, so the guess is visible', () => {
+    expect(renderDiscoveryManifest(analyseDiscovery(crowded))).toContain('derived from network names');
+    const solo = discovery({ networks: [{ id: 'v', name: 'only', region: 'eu-west-2', cidrs: ['10.0.0.0/16'] }] });
+    expect(renderDiscoveryManifest(analyseDiscovery(solo))).not.toContain('derived from network names');
   });
 });

@@ -126,13 +126,23 @@ nxip plan -f discovered.yaml
 
 This writes a manifest using the CIDRs that are *actually deployed*, so
 applying it registers your estate as it really is rather than allocating a
-parallel set of blocks alongside it. Each entry carries its AWS VPC and
-subnet id in metadata, so the link back to the source survives.
+parallel set of blocks alongside it. Each entry carries its source network
+and subnet id in metadata, so the link back to the real resource survives.
 
-Review it before applying. Names come from AWS `Name` tags, which are
+**It emits the pools too, and `apply` creates them before the subnets**, so
+a discovered estate loads in one step rather than needing pools built by
+hand first.
+
+The interesting constraint is that nxip allows one pool per
+environment/region/family, and real accounts routinely put several networks
+in one region. So where a region holds exactly one network the environment
+defaults to `production`; where it holds several, the environment is derived
+from each network's own name to keep them distinct. Both are guesses a scan
+cannot verify, and the file says so at the top.
+
+Review it before applying. Names come from cloud `Name` tags, which are
 frequently duplicated and not always what you would want nxip to call
-things, and you need a pool in nxip covering each environment/region/family
-before `nxip apply` will succeed.
+things, and only you know which network is really staging.
 
 ### Overlaps that are supposed to be there
 
@@ -292,6 +302,10 @@ the Terraform provider carries over directly:
 
 ## Known limitations
 
+- **Pools are proposed, not decided.** A scan cannot tell which network is
+  staging, so `environment` is always a guess you should review. If a
+  proposed environment/region/family key is already held by a different pool,
+  `nxip plan` says so explicitly and tells you to rename it.
 - **Top-level subnets only.** A subnet referencing another subnet declared
   later in the *same* manifest isn't resolved - `parent_subnet_id` must be
   a real, already-existing ID. Nesting a manifest's own subnets under each

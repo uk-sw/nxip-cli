@@ -1,5 +1,21 @@
 export type AddressFamily = 'IPV4' | 'IPV6';
 
+// The request body POST /v1/pools accepts. A pool is the container a subnet
+// routes into by environment/region/family, so nothing can be registered
+// until one exists - which is why the manifest can declare them.
+export interface NxipPoolBody {
+  name: string;
+  cidr: string;
+  family: AddressFamily;
+  environment: string;
+  region: string;
+  metadata?: Record<string, string>;
+}
+
+export interface NxipPool extends NxipPoolBody {
+  id: string;
+}
+
 // The exact request body POST /v1/subnets and POST /v1/subnets/preview
 // accept. v1 scope: top-level subnets only (auto-resolving by
 // environment/region/family, or nesting under an already-existing

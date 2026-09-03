@@ -1,6 +1,6 @@
 import { parse } from 'yaml';
 import { z } from 'zod';
-import type { NxipSubnetBody } from './types.js';
+import type { NxipPoolBody, NxipSubnetBody } from './types.js';
 
 // YAML uses the same snake_case attribute names as the Terraform provider's
 // HCL (prefix_length, parent_subnet_id) - deliberately, so anyone who's
@@ -28,9 +28,30 @@ const subnetEntrySchema = z
     message: 'Exactly one of `cidr` or `prefix_length` is required.',
   });
 
-const manifestSchema = z.object({
-  subnets: z.array(subnetEntrySchema).min(1, 'Manifest must declare at least one subnet.'),
-});
+// Pools are optional and listed first because they must exist before any
+// subnet can route into one. A manifest that declares both applies in that
+// order, which is what makes a discovered estate loadable in one step.
+const poolEntrySchema = z
+  .object({
+    name: z.string().min(1),
+    cidr: z.string().min(1),
+    family: z.enum(['IPV4', 'IPV6']),
+    environment: z.string().min(1),
+    region: z.string().min(1),
+    metadata: z.record(z.string(), z.string()).optional(),
+  })
+  .strict();
+
+const manifestSchema = z
+  .object({
+    // .nullish(): a key written with nothing under it parses as null in
+    // YAML, which is a reasonable thing for a person to write.
+    pools: z.array(poolEntrySchema).nullish(),
+    subnets: z.array(subnetEntrySchema).nullish(),
+  })
+  .refine((m) => (m.pools?.length ?? 0) + (m.subnets?.length ?? 0) > 0, {
+    message: 'Manifest must declare at least one pool or subnet.',
+  });
 
 export interface ManifestEntry {
   /** The manifest's own name for this subnet - not sent to the API, used only for CLI output. */
@@ -38,9 +59,23 @@ export interface ManifestEntry {
   body: NxipSubnetBody;
 }
 
+export interface PoolEntry {
+  name: string;
+  body: NxipPoolBody;
+}
+
+export interface Manifest {
+  pools: PoolEntry[];
+  subnets: ManifestEntry[];
+}
+
 export class ManifestError extends Error {}
 
 export function parseManifest(rawYaml: string): ManifestEntry[] {
+  return parseFullManifest(rawYaml).subnets;
+}
+
+export function parseFullManifest(rawYaml: string): Manifest {
   let parsed: unknown;
   try {
     parsed = parse(rawYaml);
@@ -54,15 +89,35 @@ export function parseManifest(rawYaml: string): ManifestEntry[] {
     throw new ManifestError(`Invalid manifest:\n${issues}`);
   }
 
+  const poolNames = new Set<string>();
+  for (const pool of result.data.pools ?? []) {
+    if (poolNames.has(pool.name)) {
+      throw new ManifestError(`Duplicate pool name in manifest: "${pool.name}" - names must be unique within a file.`);
+    }
+    poolNames.add(pool.name);
+  }
+
   const names = new Set<string>();
-  for (const entry of result.data.subnets) {
+  for (const entry of result.data.subnets ?? []) {
     if (names.has(entry.name)) {
       throw new ManifestError(`Duplicate subnet name in manifest: "${entry.name}" - names must be unique within a file.`);
     }
     names.add(entry.name);
   }
 
-  return result.data.subnets.map((entry) => ({
+  return {
+    pools: (result.data.pools ?? []).map((pool) => ({
+      name: pool.name,
+      body: {
+        name: pool.name,
+        cidr: pool.cidr,
+        family: pool.family,
+        environment: pool.environment,
+        region: pool.region,
+        metadata: pool.metadata,
+      },
+    })),
+    subnets: (result.data.subnets ?? []).map((entry) => ({
     name: entry.name,
     body: {
       family: entry.family,
@@ -75,5 +130,6 @@ export function parseManifest(rawYaml: string): ManifestEntry[] {
       description: entry.description,
       metadata: entry.metadata,
     },
-  }));
+  })),
+  };
 }

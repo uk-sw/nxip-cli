@@ -4,9 +4,9 @@ import { formatApplyResults, type ApplyResult } from '../src/apply.js';
 describe('formatApplyResults', () => {
   it('reports created, skipped, and failed subnets, with a correct total', () => {
     const results: ApplyResult[] = [
-      { name: 'payments', outcome: 'created', detail: '10.0.4.0/24 (id sub_1)' },
-      { name: 'overflow', outcome: 'skipped', detail: 'full: Pool is full' },
-      { name: 'race-loser', outcome: 'failed', detail: 'CIDR was taken by a concurrent request' },
+      { name: 'payments', kind: 'subnet' as const, outcome: 'created', detail: '10.0.4.0/24 (id sub_1)' },
+      { name: 'overflow', kind: 'subnet' as const, outcome: 'skipped', detail: 'full: Pool is full' },
+      { name: 'race-loser', kind: 'subnet' as const, outcome: 'failed', detail: 'CIDR was taken by a concurrent request' },
     ];
 
     const output = formatApplyResults(results);
@@ -17,7 +17,7 @@ describe('formatApplyResults', () => {
   });
 
   it('reports zero created when every subnet was skipped', () => {
-    const results: ApplyResult[] = [{ name: 'a', outcome: 'skipped', detail: 'full: Pool is full' }];
+    const results: ApplyResult[] = [{ name: 'a', kind: 'subnet' as const, outcome: 'skipped', detail: 'full: Pool is full' }];
     expect(formatApplyResults(results)).toContain('Apply complete: 0 created, 1 not created.');
   });
 });
