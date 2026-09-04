@@ -354,7 +354,9 @@ export function formatScanReport(report: ScanReport): string {
   for (const source of discovery.sources) {
     lines.push(
       `  ${source.provider.padEnd(6)} ${source.account ?? 'unknown account'}  ` +
-        `${source.regions.length} region${source.regions.length === 1 ? '' : 's'}: ${source.regions.join(', ')}`
+        (source.regions.length === 0
+          ? 'no regions'
+          : `${source.regions.length} region${source.regions.length === 1 ? '' : 's'}: ${source.regions.join(', ')}`)
     );
   }
   if (redacted) {

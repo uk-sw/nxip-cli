@@ -129,6 +129,18 @@ describe('analyseDiscovery', () => {
 });
 
 describe('formatScanReport', () => {
+  // Regression: an empty subscription rendered "0 regions: " with a trailing
+  // colon and nothing after it. This is the first thing a stranger sees if
+  // they point the scan at the wrong subscription or a fresh account, which
+  // is exactly when a sloppy line costs the most trust.
+  it('does not leave a dangling colon when an account has no regions', () => {
+    const output = formatScanReport(
+      analyseDiscovery(discovery({ provider: 'azure', regions: [], networks: [] }))
+    );
+    expect(output).toContain('no regions');
+    expect(output).not.toContain('0 regions:');
+  });
+
   it('says so plainly when nothing overlaps', () => {
     const output = formatScanReport(
       analyseDiscovery(

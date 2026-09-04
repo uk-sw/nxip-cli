@@ -277,7 +277,11 @@ async function main() {
     // manifest being redirected to a file. It names the literal next command
     // rather than a bare URL: this fires at the moment someone has just seen
     // their own estate, so sending them to a homepage to re-orient wastes it.
-    if (!args.emitManifest && !args.json) {
+    // Nothing discovered means there is nothing to pitch about: telling
+    // someone with zero networks to emit a manifest of nothing reads as
+    // broken, and it is the first thing a stranger sees if they point this
+    // at the wrong subscription or an empty account.
+    if (!args.emitManifest && !args.json && report.totals.networks > 0) {
       console.error(
         report.clusters.length > 0
           ? '\nWant these checked before the next terraform apply, not after?'
