@@ -88,6 +88,14 @@ key, free at [nx-ip.com](https://nx-ip.com/signup).
 
 ## Scanning a cloud account (`nxip scan`)
 
+**What it compares against:** the networks it discovers, against each other.
+Nothing else. It reads your cloud provider APIs, does the overlap analysis
+entirely on your machine, and exits. It never contacts nxip, needs no nxip
+account, and carries no telemetry.
+
+If you want to compare against what your nxip organization already holds,
+that is a different command: `nxip plan -f <manifest.yaml>`.
+
 ```bash
 nxip scan aws                          # one cloud
 nxip scan aws azure                    # both, analysed as one estate
@@ -96,7 +104,19 @@ nxip scan azure --all-subscriptions
 nxip scan aws azure --exclude 192.168.0.0/16
 nxip scan aws azure --redact           # safe to share
 nxip scan aws azure --json             # machine-readable, for piping
+nxip scan aws azure --fail-on-overlap  # exit 1 on a real conflict, for CI
 ```
+
+### Using it as a CI check (`--fail-on-overlap`)
+
+By default `scan` always exits 0: finding an overlap is a result, not a
+failure, and defaulting otherwise would break anyone piping the output.
+
+Pass `--fail-on-overlap` to exit 1 when a genuine conflict is found. It is
+keyed on real conflicts only, so deliberately shared ranges (`100.64.0.0/10`
+for EKS pods, link-local, and anything you add with `--exclude`) never fail
+a build. A fleet of Kubernetes clusters sharing pod CIDRs by design stays
+green.
 
 Provider flags:
 
@@ -121,8 +141,12 @@ What it reports:
 ### Turning a scan into a registry (`--emit-manifest`)
 
 ```bash
-nxip scan aws --all-regions --emit-manifest -o discovered.yaml
-nxip plan -f discovered.yaml
+nxip scan aws --all-regions --emit-manifest -o aws-discovered.yaml
+nxip plan -f aws-discovered.yaml
+
+# -o takes any path. Naming it after the estate keeps a two-cloud scan
+# from overwriting itself:
+nxip scan azure --emit-manifest -o azure-discovered.yaml
 ```
 
 This writes a manifest using the CIDRs that are *actually deployed*, so

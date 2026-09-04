@@ -31,6 +31,7 @@ interface ParsedArgs {
   providers: string[];
   subscriptions?: string[];
   allSubscriptions: boolean;
+  failOnOverlap: boolean;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -45,6 +46,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     redact: false,
     providers: [],
     allSubscriptions: false,
+    failOnOverlap: false,
   };
 
   // `scan` takes one or more providers as leading positionals, so
@@ -87,6 +89,8 @@ function parseArgs(argv: string[]): ParsedArgs {
       args.subscriptions = (rest[++i] ?? '').split(',').map((r) => r.trim()).filter(Boolean);
     } else if (arg === '--all-subscriptions') {
       args.allSubscriptions = true;
+    } else if (arg === '--fail-on-overlap') {
+      args.failOnOverlap = true;
     }
   }
 
@@ -127,10 +131,15 @@ function printUsage(stream: 'out' | 'err' = 'err') {
   const write = stream === 'out' ? console.log : console.error;
   write('Usage: nxip scan <aws|azure> [aws|azure] [--exclude CIDR,...] [--include-shared]');
   write('                     [--redact] [--json] [--emit-manifest] [-o FILE]');
+  write('                     [--fail-on-overlap]   exit 1 if a real conflict is found');
   write('         aws:   [--region NAME,...] [--all-regions] [--profile NAME]');
   write('         azure: [--subscription ID,...] [--all-subscriptions]');
   write('       nxip scaffold -f <site.yaml> [-o <manifest.yaml>]');
   write('       nxip <plan|apply> -f <manifest.yaml> [--api-key KEY] [--url URL] [--auto-approve]');
+  write('');
+  write('scan compares the networks it discovers against each other, entirely on');
+  write('this machine. It never contacts nxip. To compare against what your nxip');
+  write('organization already holds, use `nxip plan -f <manifest.yaml>` instead.');
   write('');
   write('scan and scaffold need no nxip account. plan and apply need an API key.');
   write('Docs: https://nx-ip.com/docs/nxip-cli');
@@ -281,13 +290,25 @@ async function main() {
     // someone with zero networks to emit a manifest of nothing reads as
     // broken, and it is the first thing a stranger sees if they point this
     // at the wrong subscription or an empty account.
+    // Opt-in, never the default: "found an overlap" is a finding rather than
+    // a failure, and defaulting to non-zero would break anyone piping this.
+    // Keyed on real conflicts only, so deliberately shared ranges (CGNAT and
+    // friends) never fail a build. Mirrors terraform plan -detailed-exitcode.
+    if (args.failOnOverlap && report.clusters.length > 0) {
+      process.exitCode = 1;
+    }
+
     if (!args.emitManifest && !args.json && report.totals.networks > 0) {
       console.error(
         report.clusters.length > 0
           ? '\nWant these checked before the next terraform apply, not after?'
           : '\nWant this tracked continuously as your estate changes?'
       );
-      console.error(`Load it in:  npx nxip-cli scan ${args.providers.join(' ')} --emit-manifest -o discovered.yaml`);
+      // Name the file after what was actually scanned, so an estate with
+      // both clouds does not end up with two files called discovered.yaml
+      // overwriting each other.
+      const suggested = `${args.providers.join('-')}-discovered.yaml`;
+      console.error(`Load it in:  npx nxip-cli scan ${args.providers.join(' ')} --emit-manifest -o ${suggested}`);
       console.error('Guide:       https://nx-ip.com/docs/discovery#getting-it-into-nxip');
     }
     return;
