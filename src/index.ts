@@ -129,21 +129,29 @@ function loadManifest(file: string | undefined): Manifest | null {
 
 function printUsage(stream: 'out' | 'err' = 'err') {
   const write = stream === 'out' ? console.log : console.error;
-  write('Usage: nxip scan <aws|azure> [aws|azure] [--exclude CIDR,...] [--include-shared]');
+  write(`Usage: ${CLI} scan <aws|azure> [aws|azure] [--exclude CIDR,...] [--include-shared]`);
   write('                     [--redact] [--json] [--emit-manifest] [-o FILE]');
   write('                     [--fail-on-overlap]   exit 1 if a real conflict is found');
   write('         aws:   [--region NAME,...] [--all-regions] [--profile NAME]');
   write('         azure: [--subscription ID,...] [--all-subscriptions]');
-  write('       nxip scaffold -f <site.yaml> [-o <manifest.yaml>]');
-  write('       nxip <plan|apply> -f <manifest.yaml> [--api-key KEY] [--url URL] [--auto-approve]');
+  write(`       ${CLI} scaffold -f <site.yaml> [-o <manifest.yaml>]`);
+  write(`       ${CLI} <plan|apply> -f <manifest.yaml> [--api-key KEY] [--url URL] [--auto-approve]`);
   write('');
   write('scan compares the networks it discovers against each other, entirely on');
   write('this machine. It never contacts nxip. To compare against what your nxip');
-  write('organization already holds, use `nxip plan -f <manifest.yaml>` instead.');
+  write(`organization already holds, use \`${CLI} plan -f <manifest.yaml>\` instead.`);
   write('');
   write('scan and scaffold need no nxip account. plan and apply need an API key.');
   write('Docs: https://nx-ip.com/docs/nxip-cli');
 }
+
+// How to tell someone to run this. The bin is `nxip`, which only exists
+// after a global install, but the docs, README and every published example
+// lead with npx. Emitting a bare `nxip` tells most users to run a command
+// they do not have, so instruction text always uses the runnable form.
+// npx resolves an existing local or global install before fetching, so this
+// is correct for everyone.
+const CLI = 'npx nxip-cli';
 
 const COMMANDS = new Set(['scan', 'scaffold', 'plan', 'apply']);
 
@@ -195,7 +203,7 @@ async function main() {
     }
     if (args.output) {
       writeFileSync(args.output, manifest, 'utf-8');
-      console.log(`Wrote ${args.output}. Review it, then run: nxip plan -f ${args.output}`);
+      console.log(`Wrote ${args.output}. Review it, then run: ${CLI} plan -f ${args.output}`);
     } else {
       process.stdout.write(manifest);
     }
@@ -211,7 +219,7 @@ async function main() {
     const SUPPORTED = new Set(['aws', 'azure']);
     const unknown = args.providers.filter((p) => !SUPPORTED.has(p));
     if (args.providers.length === 0 || unknown.length > 0) {
-      console.error('Usage: nxip scan <aws|azure> [aws|azure] [provider flags] [--exclude CIDR,...] [--include-shared] [--redact] [--json] [--emit-manifest] [-o FILE]');
+      console.error(`Usage: ${CLI} scan <aws|azure> [aws|azure] [provider flags] [--exclude CIDR,...] [--include-shared] [--redact] [--json] [--emit-manifest] [-o FILE]`);
       console.error(
         unknown.length > 0
           ? `Unknown provider${unknown.length === 1 ? '' : 's'} ${unknown.map((u) => `"${u}"`).join(', ')}. Supported: aws, azure.`
@@ -279,7 +287,7 @@ async function main() {
       writeFileSync(args.output, output, 'utf-8');
       console.log(
         args.emitManifest
-          ? `Wrote ${args.output}. Review it, then run: nxip plan -f ${args.output}`
+          ? `Wrote ${args.output}. Review it, then run: ${CLI} plan -f ${args.output}`
           : `Wrote ${args.output}.`
       );
     } else {
