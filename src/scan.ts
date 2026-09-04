@@ -380,9 +380,16 @@ export function formatScanReport(report: ScanReport): string {
     const cloud = discovery.sources.length > 1 && network.provider ? `${network.provider}  ` : '';
     lines.push(`  ${cloud}${label(network.name, network.id)}  ${network.region}${suffix}`);
     lines.push(`    ${network.cidrs.join(', ')}`);
+    // v6 capacity is deliberately not computed (see the note above rangesOf),
+    // so a v6-only network has capacity 0. Printing "0% carved, 0 addresses
+    // unused" against a /32 reads as a bug rather than as a deliberate
+    // omission, so say which it is.
+    const isIpv6Only = network.cidrs.length > 0 && network.cidrs.every((cidr) => cidr.includes(':'));
     lines.push(
       `    ${summary.subnetCount} subnet${summary.subnetCount === 1 ? '' : 's'}, ` +
-        `${summary.percentageCarved}% carved, ${summary.unused.toLocaleString()} addresses unused`
+        (isIpv6Only
+          ? 'IPv6 capacity not measured'
+          : `${summary.percentageCarved}% carved, ${summary.unused.toLocaleString()} addresses unused`)
     );
     lines.push('');
   }
@@ -411,7 +418,7 @@ export function formatScanReport(report: ScanReport): string {
     lines.push('  These cannot be peered or routed to each other without renumbering one side.');
     lines.push('');
   } else {
-    lines.push('No overlapping VPC address space found.');
+    lines.push(`No overlapping ${networkNoun(report)} address space found.`);
     lines.push('');
   }
 

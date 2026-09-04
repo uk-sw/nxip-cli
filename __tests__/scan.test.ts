@@ -141,6 +141,39 @@ describe('formatScanReport', () => {
     expect(output).not.toContain('0 regions:');
   });
 
+  // Regression: this line hardcoded "VPC" while every sibling line used the
+  // provider-aware noun, so an Azure-only scan announced "No overlapping VPC
+  // address space found" as its headline result.
+  it('uses the provider noun when reporting no overlaps', () => {
+    const azure = formatScanReport(
+      analyseDiscovery(
+        discovery({
+          provider: 'azure',
+          networks: [{ id: 'vnet-1', name: 'solo', region: 'eastus', cidrs: ['10.100.1.0/24'] }],
+        })
+      )
+    );
+    expect(azure).toContain('No overlapping VNet address space found.');
+    expect(azure).not.toContain('VPC');
+  });
+
+  // Regression: IPv6 capacity is deliberately not computed, so a v6-only
+  // network reported "0% carved, 0 addresses unused" against a /32, which
+  // reads as a broken measurement rather than an intentional omission.
+  it('says IPv6 is not measured rather than reporting zero capacity', () => {
+    const output = formatScanReport(
+      analyseDiscovery(
+        discovery({
+          provider: 'azure',
+          regions: ['westus3'],
+          networks: [{ id: 'vnet-v6', name: 'v6only', region: 'westus3', cidrs: ['fd00:100::/32'] }],
+        })
+      )
+    );
+    expect(output).toContain('IPv6 capacity not measured');
+    expect(output).not.toContain('0 addresses unused');
+  });
+
   it('says so plainly when nothing overlaps', () => {
     const output = formatScanReport(
       analyseDiscovery(
