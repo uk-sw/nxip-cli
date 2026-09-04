@@ -72,22 +72,79 @@ export async function applyFullManifest(options: NxipClientOptions, manifest: Ma
  * reported per-subnet, not thrown - one collision shouldn't abort every
  * other subnet in the same manifest.
  */
+/**
+ * Parents before children, so a `parent:` reference can be swapped for the
+ * real nxip id by the time the child is created. Cycles and dangling
+ * references are already rejected at parse time, so the escape hatch here is
+ * defensive rather than expected.
+ */
+function orderParentsFirst(entries: ManifestEntry[]): ManifestEntry[] {
+  const ordered: ManifestEntry[] = [];
+  const emitted = new Set<string>();
+  let remaining = [...entries];
+
+  while (remaining.length > 0) {
+    const ready = remaining.filter((entry) => !entry.parent || emitted.has(entry.parent));
+    if (ready.length === 0) {
+      ordered.push(...remaining);
+      break;
+    }
+    for (const entry of ready) {
+      ordered.push(entry);
+      emitted.add(entry.name);
+    }
+    const readySet = new Set(ready);
+    remaining = remaining.filter((entry) => !readySet.has(entry));
+  }
+
+  return ordered;
+}
+
 export async function applyManifest(options: NxipClientOptions, entries: ManifestEntry[]): Promise<ApplyResult[]> {
-  const planned = await planManifest(options, entries);
+  const ordered = orderParentsFirst(entries);
+
+  // Only entries that stand on their own can be previewed up front. A child
+  // nests under something this same apply has not created yet, so there is
+  // nothing for the preview to resolve against: those are validated by the
+  // API at creation time instead.
+  const standalone = ordered.filter((entry) => !entry.parent);
+  const planned = await planManifest(options, standalone);
+  const plannedByName = new Map(planned.map((item) => [item.name, item]));
+
+  const createdIds = new Map<string, string>();
   const results: ApplyResult[] = [];
 
-  for (const item of planned) {
-    if (!item.result.wouldSucceed) {
-      results.push({ name: item.name, kind: 'subnet', outcome: 'skipped', detail: `${item.result.reason}: ${item.result.message}` });
-      continue;
+  for (const entry of ordered) {
+    let body = entry.body;
+
+    if (entry.parent) {
+      const parentId = createdIds.get(entry.parent);
+      if (!parentId) {
+        results.push({
+          name: entry.name,
+          kind: 'subnet',
+          outcome: 'skipped',
+          detail: `parent "${entry.parent}" was not created, so this could not be nested under it`,
+        });
+        continue;
+      }
+      body = { ...body, parentSubnetId: parentId };
+    } else {
+      const item = plannedByName.get(entry.name);
+      if (item && !item.result.wouldSucceed) {
+        results.push({ name: entry.name, kind: 'subnet', outcome: 'skipped', detail: `${item.result.reason}: ${item.result.message}` });
+        continue;
+      }
+      if (item) body = item.body;
     }
 
     try {
-      const created = await createSubnet(options, item.body);
-      results.push({ name: item.name, kind: 'subnet', outcome: 'created', detail: `${created.cidr} (id ${created.id})` });
+      const created = await createSubnet(options, body);
+      createdIds.set(entry.name, created.id);
+      results.push({ name: entry.name, kind: 'subnet', outcome: 'created', detail: `${created.cidr} (id ${created.id})` });
     } catch (error) {
       const message = error instanceof NxipApiError ? error.message : error instanceof Error ? error.message : String(error);
-      results.push({ name: item.name, kind: 'subnet', outcome: 'failed', detail: message });
+      results.push({ name: entry.name, kind: 'subnet', outcome: 'failed', detail: message });
     }
   }
 

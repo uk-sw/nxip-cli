@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { resolveClientOptions } from './client.js';
 import { ManifestError, parseFullManifest, type Manifest } from './manifest.js';
-import { formatPlan, planManifest, planPools, formatPoolPlan, annotateAgainstPools, formatAnnotatedPlan } from './plan.js';
+import { formatPlan, planManifest, planPools, formatPoolPlan, annotateAgainstPools, formatAnnotatedPlan, formatNestedEntries } from './plan.js';
 import { applyFullManifest, formatApplyResults } from './apply.js';
 import { expandSiteSpec, renderManifest, SiteSpecError } from './site.js';
 import { readVersion } from './version.js';
@@ -335,6 +335,7 @@ async function main() {
     // When the manifest declares pools, a plain subnet plan reads as all
     // failures, since the pools do not exist yet.
     console.log(poolPlan.length > 0 ? formatAnnotatedPlan(annotateAgainstPools(planned, poolPlan)) : formatPlan(planned));
+    process.stdout.write(formatNestedEntries(manifest.subnets));
     return;
   }
 
@@ -347,6 +348,7 @@ async function main() {
       if (poolPlan.length > 0) console.log(formatPoolPlan(poolPlan));
       const planned = await planManifest(options, manifest.subnets);
       console.log(poolPlan.length > 0 ? formatAnnotatedPlan(annotateAgainstPools(planned, poolPlan)) : formatPlan(planned));
+    process.stdout.write(formatNestedEntries(manifest.subnets));
       const approved = await confirm('Do you want to perform these actions?');
       if (!approved) {
         console.log('Apply cancelled.');

@@ -249,6 +249,11 @@ describe('formatScanReport', () => {
   });
 });
 
+// The manifest now declares networks and their subnets in one list, the
+// networks being the structural parents. Most assertions care about the
+// cloud subnets, so pull them out by their parent link.
+const childrenOf = (entries: { parent?: string }[]) => entries.filter((e) => e.parent);
+
 describe('renderDiscoveryManifest', () => {
   const report = analyseDiscovery(
     discovery({
@@ -265,10 +270,14 @@ describe('renderDiscoveryManifest', () => {
     // parseManifest, `nxip plan -f` on the output fails and the bridge is a
     // dead end.
     const entries = parseManifest(renderDiscoveryManifest(report));
-    expect(entries).toHaveLength(2);
-    expect(entries[0].body.cidr).toBe('10.0.1.0/24');
-    expect(entries[0].body.prefixLength).toBeUndefined();
-    expect(entries[0].body.region).toBe('eu-west-2');
+    // One structural network plus its two subnets.
+    expect(entries).toHaveLength(3);
+    const children = childrenOf(entries);
+    expect(children).toHaveLength(2);
+    expect(children[0].body.cidr).toBe('10.0.1.0/24');
+    expect(children[0].body.prefixLength).toBeUndefined();
+    // Region is inherited from the parent rather than repeated per subnet.
+    expect(children[0].parent).toBe('prod');
   });
 
   it('preserves the real CIDRs rather than asking nxip to allocate new ones', () => {
@@ -279,7 +288,7 @@ describe('renderDiscoveryManifest', () => {
   });
 
   it('carries provenance back to the source cloud in metadata', () => {
-    const entries = parseManifest(renderDiscoveryManifest(report));
+    const entries = childrenOf(parseManifest(renderDiscoveryManifest(report)));
     // Keys are provider-neutral now that Azure exists: a manifest may mix
     // clouds, so "vpc_id" would be a lie for half of it.
     expect(entries[0].body.metadata).toMatchObject({
@@ -302,7 +311,7 @@ describe('renderDiscoveryManifest', () => {
     );
     // parseManifest rejects duplicate names outright, so this would throw if
     // the de-duplication were missing.
-    const entries = parseManifest(renderDiscoveryManifest(duplicated));
+    const entries = childrenOf(parseManifest(renderDiscoveryManifest(duplicated)));
     expect(entries.map((e) => e.name)).toEqual(['private', 'private-2']);
   });
 
@@ -313,7 +322,7 @@ describe('renderDiscoveryManifest', () => {
         subnets: [{ id: 'subnet-xyz', name: null, networkId: 'vpc-1', region: 'eu-west-2', cidr: '10.0.1.0/24' }],
       })
     );
-    expect(parseManifest(renderDiscoveryManifest(untagged))[0].name).toBe('subnet-xyz');
+    expect(childrenOf(parseManifest(renderDiscoveryManifest(untagged)))[0].name).toBe('subnet-xyz');
   });
 });
 
@@ -545,7 +554,7 @@ describe('cross-cloud analysis', () => {
   });
 
   it('emits one manifest covering both clouds', () => {
-    const entries = parseManifest(renderDiscoveryManifest(analyseDiscovery([aws, azure])));
+    const entries = childrenOf(parseManifest(renderDiscoveryManifest(analyseDiscovery([aws, azure]))));
     expect(entries).toHaveLength(2);
     expect(entries.map((e) => e.body.metadata?.source).sort()).toEqual(['aws-scan', 'azure-scan']);
   });
@@ -609,23 +618,35 @@ describe('pool proposal (--emit-manifest)', () => {
     expect(new Set(pools.map((p) => p.environment)).size).toBe(2);
   });
 
-  it('gives each subnet the environment of the pool that contains it', () => {
+  // A cloud network is not a pool: a pool is the block you carve space out
+  // of, and a VPC is itself carved out of that. So the manifest declares no
+  // pools at all, and every cloud subnet nests under its own network.
+  it('emits no pools, and nests each subnet under its own network', () => {
     const manifest = parseFullManifest(renderDiscoveryManifest(analyseDiscovery(crowded)));
-    for (const subnet of manifest.subnets) {
-      const pool = manifest.pools.find((p) => p.body.environment === subnet.body.environment);
-      // Without this the two halves of the file disagree and every subnet
-      // fails to route, which is exactly the gap this work closed.
-      expect(pool, `no pool for ${subnet.name}`).toBeDefined();
-      expect(pool!.body.region).toBe(subnet.body.region);
+    expect(manifest.pools).toHaveLength(0);
+
+    const networks = manifest.subnets.filter((s) => !s.parent);
+    const children = manifest.subnets.filter((s) => s.parent);
+    expect(networks).toHaveLength(3);
+    expect(children).toHaveLength(3);
+
+    for (const child of children) {
+      const parent = networks.find((n) => n.name === child.parent);
+      expect(parent, `no parent for ${child.name}`).toBeDefined();
     }
   });
 
-  it('emits a manifest that parses as both pools and subnets', () => {
+  it('registers exact blocks rather than asking for a size', () => {
     const manifest = parseFullManifest(renderDiscoveryManifest(analyseDiscovery(crowded)));
-    expect(manifest.pools).toHaveLength(3);
-    expect(manifest.subnets).toHaveLength(3);
     expect(manifest.subnets[0].body.cidr).toBeDefined();
     expect(manifest.subnets[0].body.prefixLength).toBeUndefined();
+  });
+
+  it('tags each network structurally, so its subnets can nest beneath it', () => {
+    const manifest = parseFullManifest(renderDiscoveryManifest(analyseDiscovery(crowded)));
+    for (const network of manifest.subnets.filter((s) => !s.parent)) {
+      expect(network.body.kind).toBeTruthy();
+    }
   });
 
   it('attributes a subnet to the most specific containing block', () => {
@@ -634,8 +655,9 @@ describe('pool proposal (--emit-manifest)', () => {
       subnets: [{ id: 's1', name: 'inner', networkId: 'vpc-1', region: 'eu-west-2', cidr: '10.0.1.0/24' }],
     });
     const manifest = parseFullManifest(renderDiscoveryManifest(analyseDiscovery(nested)));
-    const pool = manifest.pools.find((p) => p.body.environment === manifest.subnets[0].body.environment)!;
-    expect(pool.body.cidr).toBe('10.0.0.0/16');
+    const child = manifest.subnets.find((s) => s.parent)!;
+    const parent = manifest.subnets.find((s) => s.name === child.parent)!;
+    expect(parent.body.cidr).toBe('10.0.0.0/16');
   });
 
   it('comments out a subnet that falls outside every block its network declares', () => {
@@ -647,7 +669,8 @@ describe('pool proposal (--emit-manifest)', () => {
     expect(rendered).toContain('Left out');
     expect(rendered).toContain('192.168.5.0/24');
     // Left out rather than emitted broken: it would fail to route anyway.
-    expect(parseFullManifest(rendered).subnets).toHaveLength(0);
+    // The network itself still stands; only the stray subnet is dropped.
+    expect(childrenOf(parseFullManifest(rendered).subnets)).toHaveLength(0);
   });
 
   it('says why an environment was derived, so the guess is visible', () => {

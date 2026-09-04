@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ManifestError, parseManifest } from '../src/manifest.js';
+import { ManifestError, parseManifest, parseFullManifest } from '../src/manifest.js';
 
 describe('parseManifest', () => {
   it('parses a valid manifest into subnet entries', () => {
@@ -92,5 +92,81 @@ subnets:
     prefix_length: 24
 `)
     ).toThrow(ManifestError);
+  });
+});
+
+describe('parent references by name', () => {
+  const yaml = (body: string) => `subnets:\n${body}`;
+
+  it('carries a parent name through to the entry', () => {
+    const m = parseFullManifest(
+      yaml(`  - name: vnet-hub
+    family: IPV4
+    cidr: 10.20.0.0/16
+    environment: production
+    region: uksouth
+    kind: vnet
+  - name: web
+    family: IPV4
+    cidr: 10.20.1.0/24
+    parent: vnet-hub
+`)
+    );
+    expect(m.subnets.map((s) => [s.name, s.parent])).toEqual([
+      ['vnet-hub', undefined],
+      ['web', 'vnet-hub'],
+    ]);
+  });
+
+  // Caught at parse time, because the alternative is discovering it after
+  // half the estate has already been created.
+  it('rejects a parent that is not declared in the file', () => {
+    expect(() =>
+      parseFullManifest(yaml(`  - name: web
+    family: IPV4
+    cidr: 10.20.1.0/24
+    parent: nowhere
+`))
+    ).toThrow(/not declared in this file/);
+  });
+
+  it('rejects a circular parent chain', () => {
+    expect(() =>
+      parseFullManifest(yaml(`  - name: a
+    family: IPV4
+    cidr: 10.20.1.0/24
+    parent: b
+  - name: b
+    family: IPV4
+    cidr: 10.20.2.0/24
+    parent: a
+`))
+    ).toThrow(/Circular parent reference/);
+  });
+
+  it('rejects a subnet that parents itself', () => {
+    expect(() =>
+      parseFullManifest(yaml(`  - name: a
+    family: IPV4
+    cidr: 10.20.1.0/24
+    parent: a
+`))
+    ).toThrow(/its own parent/);
+  });
+
+  it('refuses both parent and parent_subnet_id, which would contradict', () => {
+    expect(() =>
+      parseFullManifest(yaml(`  - name: a
+    family: IPV4
+    cidr: 10.20.1.0/24
+    parent: b
+    parent_subnet_id: sub_123
+  - name: b
+    family: IPV4
+    cidr: 10.20.2.0/24
+    environment: production
+    region: uksouth
+`))
+    ).toThrow(/not both/);
   });
 });

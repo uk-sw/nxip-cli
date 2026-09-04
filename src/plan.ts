@@ -5,12 +5,41 @@ import type { PlannedSubnet } from './types.js';
 
 const PREVIEW_CONCURRENCY = 5;
 
+/**
+ * Entries that nest under another entry in this same file are deliberately
+ * not previewed: their parent does not exist yet, so there is nothing for
+ * the API to resolve them against, and a preview would fail for a reason
+ * that says nothing about whether the apply will work. They are reported
+ * separately by `formatNestedEntries`, the same way a subnet waiting on a
+ * pool declared in the same file is reported rather than failed.
+ */
 export async function planManifest(options: NxipClientOptions, entries: ManifestEntry[]): Promise<PlannedSubnet[]> {
-  return mapWithConcurrency(entries, PREVIEW_CONCURRENCY, async (entry) => ({
+  const standalone = entries.filter((entry) => !entry.parent);
+  return mapWithConcurrency(standalone, PREVIEW_CONCURRENCY, async (entry) => ({
     name: entry.name,
     body: entry.body,
     result: await previewSubnet(options, entry.body),
   }));
+}
+
+/** The nested half of a manifest, rendered for `plan` output. */
+export function formatNestedEntries(entries: ManifestEntry[]): string {
+  const nested = entries.filter((entry) => entry.parent);
+  if (nested.length === 0) return '';
+
+  const lines = [
+    '',
+    `  ${nested.length} subnet${nested.length === 1 ? '' : 's'} nest inside another subnet in this file,`,
+    '  so they are created after their parent and cannot be previewed',
+    '  independently:',
+    '',
+  ];
+  for (const entry of nested) {
+    const cidr = entry.body.cidr ? ` ${entry.body.cidr}` : '';
+    lines.push(`    + ${entry.name}${cidr}  under "${entry.parent}"`);
+  }
+  lines.push('');
+  return lines.join('\n');
 }
 
 function formatUtilization(before: { percentageUsed?: number }, after: { percentageUsed?: number }): string {

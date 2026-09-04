@@ -642,10 +642,20 @@ export function renderDiscoveryManifest(report: ScanReport, options: ManifestOpt
   }
 
   lines.push(
+    '# This file declares subnets only, and no pools. A VPC or VNet is not a',
+    '# pool: a pool is the block you carve address space out of, and a cloud',
+    '# network is itself carved out of that. So each network below is a',
+    '# structural subnet, and the subnets inside it nest underneath it.',
+    '#',
+    '# That means a pool has to exist first, covering the environment, region',
+    '# and family below. Only you know what your real address plan is, so a',
+    '# scan will not invent one. If none exists, `nxip plan` will say so and',
+    '# nothing will be created.',
+    '#',
     '# Apply with:  nxip plan -f <this file>   then   nxip apply -f <this file>',
-    '# Pools are created before subnets, so this loads in one step.',
+    '# Parents are created before their children, so this loads in one step.',
     '',
-    'pools:'
+    'subnets:'
   );
 
   for (const pool of pools) {
@@ -659,6 +669,9 @@ export function renderDiscoveryManifest(report: ScanReport, options: ManifestOpt
     lines.push(`    family: IPV4`);
     lines.push(`    environment: ${JSON.stringify(pool.environment)}`);
     lines.push(`    region: ${JSON.stringify(pool.region)}`);
+    // Structural, so the cloud subnets inside it have something to nest
+    // under rather than colliding with it as siblings.
+    lines.push(`    kind: ${JSON.stringify(pool.provider === 'azure' ? 'vnet' : 'vpc')}`);
     lines.push(`    metadata:`);
     lines.push(`      source: ${JSON.stringify(`${pool.provider ?? 'cloud'}-scan`)}`);
     lines.push(`      network_id: ${JSON.stringify(pool.networkId)}`);
@@ -695,8 +708,9 @@ export function renderDiscoveryManifest(report: ScanReport, options: ManifestOpt
     subnetLines.push(`  - name: ${JSON.stringify(name)}`);
     subnetLines.push(`    family: IPV4`);
     subnetLines.push(`    cidr: ${JSON.stringify(subnet.cidr)}`);
-    subnetLines.push(`    environment: ${JSON.stringify(pool.environment)}`);
-    subnetLines.push(`    region: ${JSON.stringify(subnet.region)}`);
+    // By name, not by id: nothing in this file exists yet, so apply
+    // creates the network first and substitutes its real id here.
+    subnetLines.push(`    parent: ${JSON.stringify(pool.name)}`);
     subnetLines.push(`    metadata:`);
     subnetLines.push(`      source: ${JSON.stringify(`${subnet.provider ?? 'cloud'}-scan`)}`);
     subnetLines.push(`      network_id: ${JSON.stringify(subnet.networkId)}`);
@@ -706,10 +720,7 @@ export function renderDiscoveryManifest(report: ScanReport, options: ManifestOpt
     subnetLines.push('');
   }
 
-  // A bare `subnets:` with nothing under it parses as null, not an empty
-  // list, so the key is omitted entirely when there is nothing to put in it.
   if (subnetLines.length > 0) {
-    lines.push('subnets:');
     lines.push(...subnetLines);
   }
 

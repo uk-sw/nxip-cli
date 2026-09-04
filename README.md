@@ -149,6 +149,24 @@ nxip plan -f aws-discovered.yaml
 nxip scan azure --emit-manifest -o azure-discovered.yaml
 ```
 
+**A VPC or VNet is a subnet, not a pool.** A pool is the block you carve
+address space out of; a cloud network is itself carved out of that. So the
+manifest declares no pools, and models the hierarchy you actually have:
+
+| In your estate | In nxip |
+|---|---|
+| Your address plan, say `10.0.0.0/8` | A **pool**. You create this, once. |
+| A VPC or VNet, say `10.20.0.0/16` | A **subnet** in that pool, tagged structurally |
+| A subnet inside it, say `10.20.1.0/24` | A **child subnet** of that network |
+
+Only you know what your real address plan is, so a scan will not invent one.
+Create the pool covering that environment, region and family first, and if
+none exists `nxip plan` will say so rather than creating anything.
+
+Children reference their network by name, not by id, because nothing in the
+file exists yet. `apply` creates each network first and substitutes its real
+id into the subnets beneath it.
+
 This writes a manifest using the CIDRs that are *actually deployed*, so
 applying it registers your estate as it really is rather than allocating a
 parallel set of blocks alongside it. Each entry carries its source network

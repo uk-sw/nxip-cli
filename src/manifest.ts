@@ -14,12 +14,26 @@ const subnetEntrySchema = z
     prefix_length: z.number().int().optional(),
     cidr: z.string().min(1).optional(),
     parent_subnet_id: z.string().min(1).optional(),
+    /**
+     * A parent declared elsewhere in this same file, referenced by its
+     * name. A manifest is written before anything exists, so it cannot
+     * carry the parent's nxip id: apply creates parents first and
+     * substitutes the real id into each child.
+     */
+    parent: z.string().min(1).optional(),
     kind: z.string().min(1).optional(),
     description: z.string().optional(),
     metadata: z.record(z.string(), z.string()).optional(),
   })
-  .refine((entry) => entry.parent_subnet_id !== undefined || (entry.environment !== undefined && entry.region !== undefined), {
-    message: 'Either parent_subnet_id, or both environment and region, is required.',
+  .refine(
+    (entry) =>
+      entry.parent_subnet_id !== undefined ||
+      entry.parent !== undefined ||
+      (entry.environment !== undefined && entry.region !== undefined),
+    { message: 'Either parent (a name in this file), parent_subnet_id, or both environment and region, is required.' }
+  )
+  .refine((entry) => !(entry.parent !== undefined && entry.parent_subnet_id !== undefined), {
+    message: 'Use either `parent` (a name in this file) or `parent_subnet_id` (an existing nxip id), not both.',
   })
   // Mirrors the API's own rule (createSubnetSchema): exactly one of cidr or
   // prefix_length. Caught here so a whole manifest fails locally with a
@@ -56,6 +70,11 @@ const manifestSchema = z
 export interface ManifestEntry {
   /** The manifest's own name for this subnet - not sent to the API, used only for CLI output. */
   name: string;
+  /**
+   * Name of another entry in this same file that this one nests under.
+   * Resolved to a real parentSubnetId by apply, once the parent exists.
+   */
+  parent?: string;
   body: NxipSubnetBody;
 }
 
@@ -105,6 +124,36 @@ export function parseFullManifest(rawYaml: string): Manifest {
     names.add(entry.name);
   }
 
+  // Caught at parse time rather than mid-apply, where half the estate
+  // would already be created.
+  for (const entry of result.data.subnets ?? []) {
+    if (entry.parent === undefined) continue;
+    if (entry.parent === entry.name) {
+      throw new ManifestError(`Subnet "${entry.name}" lists itself as its own parent.`);
+    }
+    if (!names.has(entry.parent)) {
+      throw new ManifestError(
+        `Subnet "${entry.name}" has parent "${entry.parent}", which is not declared in this file. ` +
+          'Use parent_subnet_id to nest under a subnet that already exists in nxip.'
+      );
+    }
+  }
+
+  const parentOf = new Map(
+    (result.data.subnets ?? []).filter((e) => e.parent).map((e) => [e.name, e.parent as string])
+  );
+  for (const start of parentOf.keys()) {
+    const seen = new Set<string>([start]);
+    let current = parentOf.get(start);
+    while (current !== undefined) {
+      if (seen.has(current)) {
+        throw new ManifestError(`Circular parent reference in manifest, involving "${current}".`);
+      }
+      seen.add(current);
+      current = parentOf.get(current);
+    }
+  }
+
   return {
     pools: (result.data.pools ?? []).map((pool) => ({
       name: pool.name,
@@ -119,6 +168,7 @@ export function parseFullManifest(rawYaml: string): Manifest {
     })),
     subnets: (result.data.subnets ?? []).map((entry) => ({
     name: entry.name,
+    parent: entry.parent,
     body: {
       family: entry.family,
       prefixLength: entry.prefix_length,
