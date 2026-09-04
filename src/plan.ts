@@ -1,6 +1,7 @@
 import { mapWithConcurrency } from './concurrency.js';
 import { previewSubnet, type NxipClientOptions } from './client.js';
 import type { ManifestEntry } from './manifest.js';
+import { parseIpv4Cidr, rangesOverlap } from './cidr.js';
 import type { PlannedSubnet } from './types.js';
 
 const PREVIEW_CONCURRENCY = 5;
@@ -20,6 +21,72 @@ export async function planManifest(options: NxipClientOptions, entries: Manifest
     body: entry.body,
     result: await previewSubnet(options, entry.body),
   }));
+}
+
+/**
+ * Manifest entries whose address space lands inside a pool other than the
+ * one they will resolve into.
+ *
+ * A subnet resolves to a pool by (environment, region, family), so a block
+ * sitting inside a pool scoped to a *different* region is not going to be
+ * routed there. It is either a mislabelled entry or a genuine collision
+ * between two regions' address plans, and both are worth saying out loud
+ * before anything is created.
+ *
+ * The API now refuses to create overlapping pools outright, so this exists
+ * to catch the case earlier and with a clearer message than a 409, and to
+ * flag estates that already contain an overlap from before that rule.
+ */
+export function findCrossPoolOverlaps(
+  entries: ManifestEntry[],
+  pools: import('./types.js').NxipPool[]
+): { entry: ManifestEntry; pool: import('./types.js').NxipPool }[] {
+  const findings: { entry: ManifestEntry; pool: import('./types.js').NxipPool }[] = [];
+
+  for (const entry of entries) {
+    const cidr = entry.body.cidr;
+    if (!cidr || entry.body.family !== 'IPV4') continue;
+    const range = parseIpv4Cidr(cidr);
+    if (!range) continue;
+
+    for (const pool of pools) {
+      if (pool.family !== 'IPV4') continue;
+      // The pool this entry is actually destined for is not a finding: its
+      // space is supposed to sit inside that one.
+      if (pool.environment === entry.body.environment && pool.region === entry.body.region) continue;
+
+      const poolRange = parseIpv4Cidr(pool.cidr);
+      if (poolRange && rangesOverlap(range, poolRange)) {
+        findings.push({ entry, pool });
+      }
+    }
+  }
+
+  return findings;
+}
+
+/** Renders findCrossPoolOverlaps for `plan` output. */
+export function formatCrossPoolOverlaps(
+  findings: { entry: ManifestEntry; pool: import('./types.js').NxipPool }[]
+): string {
+  if (findings.length === 0) return '';
+
+  const lines = [
+    '',
+    `  Warning: ${findings.length} entr${findings.length === 1 ? 'y overlaps' : 'ies overlap'} a pool in another region.`,
+    '',
+  ];
+  for (const { entry, pool } of findings) {
+    const where = entry.body.region ? `${entry.body.environment ?? '?'} / ${entry.body.region}` : 'nested under a parent';
+    lines.push(`    ${entry.name}  ${entry.body.cidr}  (${where})`);
+    lines.push(`      sits inside pool "${pool.name}" ${pool.cidr} (${pool.environment} / ${pool.region})`);
+  }
+  lines.push('');
+  lines.push('  A subnet resolves to a pool by environment, region and family, so this');
+  lines.push('  will not route there. Either the entry is labelled for the wrong region,');
+  lines.push('  or two regions have been given overlapping address space.');
+  lines.push('');
+  return lines.join('\n');
 }
 
 /** The nested half of a manifest, rendered for `plan` output. */

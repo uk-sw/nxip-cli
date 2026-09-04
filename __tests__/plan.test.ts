@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatPlan } from '../src/plan.js';
+import { formatPlan, findCrossPoolOverlaps, formatCrossPoolOverlaps } from '../src/plan.js';
 import type { PlannedSubnet } from '../src/types.js';
 
 describe('formatPlan', () => {
@@ -89,5 +89,65 @@ describe('formatPlan', () => {
     ];
 
     expect(formatPlan(planned)).toContain('Plan: 1 to create, 1 would fail.');
+  });
+});
+
+describe('findCrossPoolOverlaps', () => {
+  const pool = (name: string, cidr: string, environment: string, region: string) =>
+    ({ id: name, name, cidr, family: 'IPV4' as const, environment, region });
+  const entry = (name: string, cidr: string, environment?: string, region?: string) =>
+    ({ name, body: { family: 'IPV4' as const, cidr, environment, region } });
+
+  it('flags an entry sitting inside a pool scoped to another region', () => {
+    const found = findCrossPoolOverlaps(
+      [entry('vnet-beta', '10.165.0.0/16', 'xpool', 'region-beta')],
+      [pool('Alpha', '10.160.0.0/12', 'xpool', 'region-alpha')]
+    );
+    expect(found).toHaveLength(1);
+    expect(found[0].pool.name).toBe('Alpha');
+  });
+
+  // The pool an entry is actually destined for is not a finding: its space
+  // is supposed to sit inside that one.
+  it('does not flag an entry against its own target pool', () => {
+    const found = findCrossPoolOverlaps(
+      [entry('web', '10.20.1.0/24', 'production', 'eu-west-2')],
+      [pool('EU West', '10.20.0.0/16', 'production', 'eu-west-2')]
+    );
+    expect(found).toHaveLength(0);
+  });
+
+  it('ignores entries that do not overlap anything', () => {
+    const found = findCrossPoolOverlaps(
+      [entry('far-away', '192.168.0.0/16', 'xpool', 'region-beta')],
+      [pool('Alpha', '10.160.0.0/12', 'xpool', 'region-alpha')]
+    );
+    expect(found).toHaveLength(0);
+  });
+
+  // Nested entries inherit their pool from a parent, and carry no
+  // environment or region of their own to compare against.
+  it('skips entries with no cidr to compare', () => {
+    const found = findCrossPoolOverlaps(
+      [{ name: 'sized', body: { family: 'IPV4' as const, prefixLength: 24, environment: 'xpool', region: 'region-beta' } }],
+      [pool('Alpha', '10.160.0.0/12', 'xpool', 'region-alpha')]
+    );
+    expect(found).toHaveLength(0);
+  });
+
+  it('renders nothing when there is nothing to warn about', () => {
+    expect(formatCrossPoolOverlaps([])).toBe('');
+  });
+
+  it('names both sides, since either could be the mistake', () => {
+    const out = formatCrossPoolOverlaps(
+      findCrossPoolOverlaps(
+        [entry('vnet-beta', '10.165.0.0/16', 'xpool', 'region-beta')],
+        [pool('Alpha', '10.160.0.0/12', 'xpool', 'region-alpha')]
+      )
+    );
+    expect(out).toContain('10.165.0.0/16');
+    expect(out).toContain('10.160.0.0/12');
+    expect(out).toContain('region-alpha');
   });
 });

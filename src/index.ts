@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import { readFileSync, writeFileSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
-import { resolveClientOptions } from './client.js';
+import { resolveClientOptions, listPools } from './client.js';
 import { ManifestError, parseFullManifest, type Manifest } from './manifest.js';
-import { formatPlan, planManifest, planPools, formatPoolPlan, annotateAgainstPools, formatAnnotatedPlan, formatNestedEntries } from './plan.js';
+import { formatPlan, planManifest, planPools, formatPoolPlan, annotateAgainstPools, formatAnnotatedPlan, formatNestedEntries, findCrossPoolOverlaps, formatCrossPoolOverlaps } from './plan.js';
 import { applyFullManifest, formatApplyResults } from './apply.js';
 import { expandSiteSpec, renderManifest, SiteSpecError } from './site.js';
 import { readVersion } from './version.js';
@@ -152,6 +152,19 @@ function printUsage(stream: 'out' | 'err' = 'err') {
 // npx resolves an existing local or global install before fetching, so this
 // is correct for everyone.
 const CLI = 'npx nxip-cli';
+
+/**
+ * Pools, for the overlap warning only. Best-effort on purpose: the warning
+ * is additional information, so failing to fetch it must not turn a
+ * working plan into an error.
+ */
+async function listPoolsQuietly(options: Parameters<typeof listPools>[0]) {
+  try {
+    return await listPools(options);
+  } catch {
+    return [];
+  }
+}
 
 const COMMANDS = new Set(['scan', 'scaffold', 'plan', 'apply']);
 
@@ -344,6 +357,7 @@ async function main() {
     // failures, since the pools do not exist yet.
     console.log(poolPlan.length > 0 ? formatAnnotatedPlan(annotateAgainstPools(planned, poolPlan)) : formatPlan(planned));
     process.stdout.write(formatNestedEntries(manifest.subnets));
+    process.stdout.write(formatCrossPoolOverlaps(findCrossPoolOverlaps(manifest.subnets, await listPoolsQuietly(options))));
     return;
   }
 
@@ -357,6 +371,7 @@ async function main() {
       const planned = await planManifest(options, manifest.subnets);
       console.log(poolPlan.length > 0 ? formatAnnotatedPlan(annotateAgainstPools(planned, poolPlan)) : formatPlan(planned));
     process.stdout.write(formatNestedEntries(manifest.subnets));
+    process.stdout.write(formatCrossPoolOverlaps(findCrossPoolOverlaps(manifest.subnets, await listPoolsQuietly(options))));
       const approved = await confirm('Do you want to perform these actions?');
       if (!approved) {
         console.log('Apply cancelled.');
