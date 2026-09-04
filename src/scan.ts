@@ -436,10 +436,26 @@ export function formatScanReport(report: ScanReport): string {
     lines.push('');
   }
 
-  const wastedPercent = totals.capacity === 0 ? 0 : Math.round(((totals.capacity - totals.carved) / totals.capacity) * 100);
+  // Deliberately says "carved", not "allocated" or "used": this scan reads
+  // networks and subnets, never individual addresses, so it cannot know what
+  // is actually in use inside a subnet. Claiming otherwise would be inventing
+  // a number.
+  //
+  // The percentage is guarded against rounding into a claim that contradicts
+  // the count beside it: 512 of 132,096 is 0.4%, and rounding that to 0 next
+  // to "512 carved" reads as broken. Same at the other end.
+  const carvedPercent = totals.capacity === 0 ? 0 : (totals.carved / totals.capacity) * 100;
+  const shownPercent =
+    totals.carved === 0
+      ? '0%'
+      : carvedPercent < 1
+        ? 'under 1%'
+        : carvedPercent > 99 && totals.carved < totals.capacity
+          ? 'over 99%'
+          : `${Math.round(carvedPercent)}%`;
   lines.push(
-    `Across everything: ${totals.capacity.toLocaleString()} addresses reserved, ` +
-      `${totals.carved.toLocaleString()} carved into subnets, ${wastedPercent}% never allocated.`
+    `Across everything: ${totals.capacity.toLocaleString()} addresses claimed by networks, ` +
+      `${totals.carved.toLocaleString()} of them carved into subnets (${shownPercent}).`
   );
 
   if (report.unparseable.length > 0) {

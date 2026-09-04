@@ -128,6 +128,42 @@ describe('analyseDiscovery', () => {
   });
 });
 
+describe('the estate summary line', () => {
+  const estate = (networkCidr: string, subnetCidrs: string[]) =>
+    analyseDiscovery(
+      discovery({
+        networks: [{ id: 'n', name: 'n', region: 'uksouth', cidrs: [networkCidr] }],
+        subnets: subnetCidrs.map((cidr, i) => ({
+          id: `s${i}`, name: `s${i}`, networkId: 'n', region: 'uksouth', cidr,
+        })),
+      })
+    );
+  const line = (report: ReturnType<typeof analyseDiscovery>) =>
+    formatScanReport(report).split('\n').find((l) => l.startsWith('Across everything')) ?? '';
+
+  // Regression: this rounded 99.6% up and announced "100% never allocated"
+  // on the same line as "512 carved into subnets", which contradicted
+  // itself. Small fractions must not round away either.
+  it('never rounds into a claim that contradicts the count beside it', () => {
+    const out = line(estate('10.0.0.0/15', ['10.0.0.0/23']));
+    expect(out).toContain('512 of them carved');
+    expect(out).toContain('under 1%');
+    expect(out).not.toContain('(0%)');
+  });
+
+  it('says 0% only when genuinely nothing is carved', () => {
+    expect(line(estate('10.0.0.0/16', []))).toContain('0 of them carved into subnets (0%)');
+  });
+
+  // The scan reads networks and subnets, never individual addresses, so it
+  // must not claim to know what is allocated or used.
+  it('claims only what it can actually see', () => {
+    const out = line(estate('10.0.0.0/16', ['10.0.1.0/24']));
+    expect(out).toContain('carved into subnets');
+    expect(out).not.toMatch(/never allocated|reserved|unused/);
+  });
+});
+
 describe('renderDiscoveryManifest and shared ranges', () => {
   const fleet = () => ({
     provider: 'aws' as const,
