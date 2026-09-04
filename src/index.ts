@@ -247,10 +247,14 @@ async function main() {
     // cloud providers themselves recommend reusing (see shared-ranges.ts);
     // --exclude adds org-specific ones, --include-shared turns the lot off.
     let sharedRanges;
+    let configuredShared: ReturnType<typeof parseSharedRanges> = [];
     try {
-      sharedRanges = args.includeShared
-        ? []
-        : [...DEFAULT_SHARED_RANGES, ...parseSharedRanges(args.exclude ?? [])];
+      // Two distinct things, deliberately kept apart: which ranges count as
+      // expectedly-shared, and whether the analysis acts on them.
+      // --include-shared only turns off the acting, so the manifest can
+      // still label CGNAT space either way.
+      configuredShared = [...DEFAULT_SHARED_RANGES, ...parseSharedRanges(args.exclude ?? [])];
+      sharedRanges = args.includeShared ? [] : configuredShared;
     } catch (error) {
       console.error(error instanceof SharedRangeError ? error.message : String(error));
       process.exitCode = 1;
@@ -260,7 +264,7 @@ async function main() {
     const report = analyseDiscovery(discovery, { sharedRanges });
 
     const output = args.emitManifest
-      ? renderDiscoveryManifest(report)
+      ? renderDiscoveryManifest(report, { sharedRanges: configuredShared, includeShared: args.includeShared })
       : args.json
         ? `${JSON.stringify(report, null, 2)}\n`
         : formatScanReport(report);

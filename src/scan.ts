@@ -489,7 +489,18 @@ function sanitize(value: string): string {
  * proposal to review, not a claim about what the estate means - a scan
  * cannot know which VPC is staging.
  */
-export function proposePools(report: ScanReport): ProposedPool[] {
+export interface ProposePoolsOptions {
+  /** Ranges treated as expectedly-shared. Omit to consider nothing shared. */
+  sharedRanges?: SharedRange[];
+  /**
+   * Which half to return. Filtering happens before environments are
+   * disambiguated, so holding a network back does not leave the survivors
+   * with names derived to avoid a collision that no longer exists.
+   */
+  select?: 'non-shared' | 'shared';
+}
+
+export function proposePools(report: ScanReport, options: ProposePoolsOptions = {}): ProposedPool[] {
   const proposals: ProposedPool[] = [];
 
   for (const network of report.discovery.networks) {
@@ -511,10 +522,19 @@ export function proposePools(report: ScanReport): ProposedPool[] {
     }
   }
 
+  const sharedRanges = options.sharedRanges ?? [];
+  const wantShared = options.select === 'shared';
+  const selected = sharedRanges.length === 0
+    ? (wantShared ? [] : proposals)
+    : proposals.filter((pool) => {
+        const isShared = isExpectedlyShared(pool.range.start, pool.range.end, sharedRanges) !== null;
+        return wantShared ? isShared : !isShared;
+      });
+
   // Anything sharing a (region, family) key needs distinguishing, since
   // IPv4 is the only family emitted here.
   const byRegion = new Map<string, ProposedPool[]>();
-  for (const pool of proposals) {
+  for (const pool of selected) {
     const list = byRegion.get(pool.region) ?? [];
     list.push(pool);
     byRegion.set(pool.region, list);
@@ -557,7 +577,7 @@ export function proposePools(report: ScanReport): ProposedPool[] {
 
   // Longest prefix first, so a subnet inside a nested block is attributed to
   // the most specific pool that contains it rather than an outer one.
-  return proposals.sort((a, b) => b.range.prefixLength - a.range.prefixLength);
+  return selected.sort((a, b) => b.range.prefixLength - a.range.prefixLength);
 }
 
 /**
@@ -570,8 +590,33 @@ export function proposePools(report: ScanReport): ProposedPool[] {
  * so the file applies as one unit instead of needing the two halves
  * reconciled by hand.
  */
-export function renderDiscoveryManifest(report: ScanReport): string {
-  const pools = proposePools(report);
+export interface ManifestOptions {
+  /**
+   * The ranges considered expectedly-shared, passed independently of whether
+   * the analysis acted on them. --include-shared zeroes the analyser's list,
+   * and the manifest still needs to know which blocks are CGNAT so it can
+   * label them either way.
+   */
+  sharedRanges?: SharedRange[];
+  /** When true, shared-range space is emitted live rather than commented out. */
+  includeShared?: boolean;
+}
+
+export function renderDiscoveryManifest(report: ScanReport, options: ManifestOptions = {}): string {
+  const sharedRanges = options.sharedRanges ?? [];
+  const excludeWith = options.includeShared ? [] : sharedRanges;
+
+  // Space inside a deliberately-shared range is not an address plan of its
+  // own: a 25-cluster EKS fleet reusing 100.64.0.0/16 by design would
+  // otherwise register 25 identical pools, which is exactly the noise the
+  // shared-range handling exists to prevent. Held back by default, labelled
+  // either way so the discovery is never silently lost.
+  const sharedOf = (pool: ProposedPool) =>
+    isExpectedlyShared(pool.range.start, pool.range.end, sharedRanges);
+  const pools = proposePools(report, { sharedRanges: excludeWith });
+  const heldBack = options.includeShared
+    ? []
+    : proposePools(report, { sharedRanges, select: 'shared' });
   const derived = pools.some((p) => p.derivedEnvironment);
 
   const lines: string[] = [
@@ -604,6 +649,11 @@ export function renderDiscoveryManifest(report: ScanReport): string {
   );
 
   for (const pool of pools) {
+    const shared = sharedOf(pool);
+    if (shared) {
+      lines.push(`  # Discovered inside ${shared.cidr}, a range expected to be shared.`);
+      lines.push('  # Registered here only because --include-shared was passed.');
+    }
     lines.push(`  - name: ${JSON.stringify(pool.name)}`);
     lines.push(`    cidr: ${JSON.stringify(pool.cidr)}`);
     lines.push(`    family: IPV4`);
@@ -669,6 +719,30 @@ export function renderDiscoveryManifest(report: ScanReport): string {
     lines.push('# this scan could not read. Worth checking directly.');
     for (const orphan of orphans) lines.push(`#   ${orphan}`);
     lines.push('');
+  }
+
+  // Discovered, deliberately not registered, and shown rather than dropped:
+  // the whole block is valid YAML behind comment markers, so anyone who
+  // disagrees can uncomment it instead of re-running with a different flag.
+  if (heldBack.length > 0) {
+    lines.push('# ---------------------------------------------------------------');
+    lines.push('# Discovered, but NOT registered: address space inside a range that');
+    lines.push('# is expected to be shared. These are deliberately reused across');
+    lines.push('# networks (EKS pod CIDRs and similar), so registering them would');
+    lines.push('# create duplicate address plans for space nobody owns exclusively.');
+    lines.push('#');
+    lines.push('# Re-run with --include-shared to register them, or uncomment below.');
+    lines.push('#');
+    for (const pool of heldBack) {
+      const shared = sharedOf(pool);
+      lines.push(`#   discovered in ${shared ? shared.cidr : 'a shared range'}: ${shared ? shared.why : ''}`.trimEnd());
+      lines.push(`#   - name: ${JSON.stringify(pool.name)}`);
+      lines.push(`#     cidr: ${JSON.stringify(pool.cidr)}`);
+      lines.push('#     family: IPV4');
+      lines.push(`#     environment: ${JSON.stringify(pool.environment)}`);
+      lines.push(`#     region: ${JSON.stringify(pool.region)}`);
+      lines.push('#');
+    }
   }
 
   return lines.join('\n');

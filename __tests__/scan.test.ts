@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { analyseDiscovery, formatScanReport, renderDiscoveryManifest, proposePools, type Discovery } from '../src/scan.js';
-import { parseSharedRanges, SharedRangeError } from '../src/shared-ranges.js';
+import { parseSharedRanges, SharedRangeError, DEFAULT_SHARED_RANGES } from '../src/shared-ranges.js';
 import { parseManifest, parseFullManifest } from '../src/manifest.js';
 
 function discovery(overrides: Partial<Discovery> = {}): Discovery {
@@ -125,6 +125,52 @@ describe('analyseDiscovery', () => {
       discovery({ networks: [{ id: 'vpc-1', name: 'empty', region: 'eu-west-2', cidrs: [] }] })
     );
     expect(report.summaries[0].percentageCarved).toBe(0);
+  });
+});
+
+describe('renderDiscoveryManifest and shared ranges', () => {
+  const fleet = () => ({
+    provider: 'aws' as const,
+    account: '123456789012',
+    regions: ['eu-west-2'],
+    networks: [
+      { id: 'vpc-prod', name: 'prod', region: 'eu-west-2', cidrs: ['10.20.0.0/16'] },
+      { id: 'vpc-eks', name: 'eks-pods', region: 'eu-west-2', cidrs: ['100.64.0.0/16'] },
+    ],
+    subnets: [],
+  });
+
+  const render = (includeShared: boolean) =>
+    renderDiscoveryManifest(
+      analyseDiscovery(discovery(fleet()), { sharedRanges: includeShared ? [] : DEFAULT_SHARED_RANGES }),
+      { sharedRanges: DEFAULT_SHARED_RANGES, includeShared }
+    );
+
+  it('holds shared-range space back by default, but shows what it held', () => {
+    const out = render(false);
+    // The routable network is registered.
+    expect(out).toContain('cidr: "10.20.0.0/16"');
+    // The CGNAT one is present only behind comment markers.
+    expect(out).toContain('Discovered, but NOT registered');
+    expect(out).toContain('#     cidr: "100.64.0.0/16"');
+    expect(out).not.toContain('\n    cidr: "100.64.0.0/16"');
+  });
+
+  it('registers shared-range space when asked, still labelling it', () => {
+    const out = render(true);
+    expect(out).toContain('    cidr: "100.64.0.0/16"');
+    expect(out).toContain('a range expected to be shared');
+    expect(out).not.toContain('Discovered, but NOT registered');
+  });
+
+  // Holding a network back must happen before environments are
+  // disambiguated. Otherwise the survivor keeps a name derived to avoid a
+  // collision with a network that is no longer in the file.
+  it('does not derive environments to avoid a network it held back', () => {
+    const out = render(false);
+    expect(out).toContain('environment: "production"');
+    expect(out).not.toContain('environment: "prod"');
+    expect(out).not.toContain('Some environments were derived');
   });
 });
 
