@@ -83,12 +83,45 @@ export function createPool(options: NxipClientOptions, body: NxipPoolBody): Prom
   return request(options, '/v1/pools', body);
 }
 
+// A ceiling that exists only so a paging bug cannot loop forever. It is far
+// above any real estate; being told the limit was hit beats a truncated read.
+const MAX_POOL_PAGES = 100;
+
 /**
  * Lists existing pools so a plan can distinguish "will be created" from
  * "already there". There is no pool preview endpoint, so this read is the
  * only way to say anything truthful about a pool before applying it.
  */
 export async function listPools(options: NxipClientOptions): Promise<NxipPool[]> {
-  const page = await request<{ data: NxipPool[] }>(options, '/v1/pools?limit=100', undefined, 'GET');
-  return page.data ?? [];
+  const pools: NxipPool[] = [];
+  let page = 1;
+
+  // Deliberately not the GUI's fetchAllPages, which stops silently at a
+  // maxPages ceiling. A dashboard showing 1,000 of 1,200 pools is merely
+  // incomplete; plan and apply reading 1,000 of 1,200 would report "will
+  // create" for a pool that exists and skip overlap checks against the rest,
+  // which is the failure this pagination is here to prevent. So the ceiling
+  // throws rather than truncates: wrong loudly beats wrong quietly.
+  while (page <= MAX_POOL_PAGES) {
+    const response = await request<{ data: NxipPool[]; meta?: { totalPages?: number } }>(
+      options,
+      `/v1/pools?limit=100&page=${page}`,
+      undefined,
+      'GET'
+    );
+    pools.push(...(response.data ?? []));
+
+    const totalPages = response.meta?.totalPages;
+    // An API that stops reporting totalPages must not silently become a
+    // single-page read again, which is the bug this replaces.
+    if (typeof totalPages !== 'number') break;
+    if (page >= totalPages) return pools;
+    page += 1;
+  }
+
+  throw new NxipApiError(
+    0,
+    `This organization has more than ${MAX_POOL_PAGES * 100} pools, which nxip cannot read in one plan. ` +
+      'Please open an issue: this limit is arbitrary and can be raised.'
+  );
 }

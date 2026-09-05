@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createSubnet, NxipApiError, previewSubnet, resolveClientOptions } from '../src/client.js';
+import { createSubnet, listPools, NxipApiError, previewSubnet, resolveClientOptions } from '../src/client.js';
 
 describe('resolveClientOptions', () => {
   const originalEnv = { ...process.env };
@@ -74,5 +74,51 @@ describe('previewSubnet / createSubnet', () => {
 
     expect(fetchMock.mock.calls[0]?.[0]).toBe('https://nxip.test/v1/subnets');
     expect(created).toEqual({ id: 'sub_1', cidr: '10.0.0.0/24' });
+  });
+});
+
+describe('listPools pagination', () => {
+  const options = { apiKey: 'k', baseUrl: 'https://example.test' };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function pagedFetch(totalPages: number) {
+    return vi.fn().mockImplementation(async (url: string) => {
+      const page = Number(new URL(url).searchParams.get('page') ?? '1');
+      return new Response(
+        JSON.stringify({
+          data: [{ id: `pool-${page}`, name: `pool-${page}`, cidr: '10.0.0.0/16' }],
+          meta: { totalPages },
+        }),
+        { status: 200 }
+      );
+    });
+  }
+
+  // The bug this replaces: one read of limit=100, so pool 101 looked absent.
+  // plan then reported "will create" for a pool that exists, apply failed on
+  // the duplicate, and cross-pool overlap checks skipped everything past it.
+  it('reads every page, not just the first', async () => {
+    const fetchMock = pagedFetch(3);
+    vi.stubGlobal('fetch', fetchMock);
+    const pools = await listPools(options);
+    expect(pools.map((p) => p.id)).toEqual(['pool-1', 'pool-2', 'pool-3']);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('stops after the last page rather than paging forever', async () => {
+    const fetchMock = pagedFetch(1);
+    vi.stubGlobal('fetch', fetchMock);
+    await listPools(options);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  // Truncating quietly is the one outcome plan and apply must never have,
+  // so an absent totalPages must not silently become a single-page read.
+  it('throws rather than truncating when the ceiling is reached', async () => {
+    vi.stubGlobal('fetch', pagedFetch(500));
+    await expect(listPools(options)).rejects.toThrow(/more than 10000 pools/);
   });
 });
