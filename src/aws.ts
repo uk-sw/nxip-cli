@@ -47,14 +47,28 @@ export async function discoverAws(options: {
 
   const seedRegion = options.regions?.[0] ?? process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION ?? 'us-east-1';
 
-  let regions = options.regions ?? [seedRegion];
-  if (options.allRegions) {
+  // Every region by default, which matches Azure's default of every
+  // subscription. Scanning one region by default made the tool answer "no
+  // overlapping address space found" after looking at a fraction of an
+  // estate: a false clean on the single question it exists to answer, and
+  // cross-region collisions are invisible by construction.
+  //
+  // --all-regions is now the default rather than a flag. It is still
+  // accepted, so existing scripts and docs keep working.
+  let regions = options.regions ?? [];
+  if (regions.length === 0) {
     const client = new EC2Client({ region: seedRegion });
     try {
       const response = await client.send(new DescribeRegionsCommand({}));
       regions = (response.Regions ?? []).map((r) => r.RegionName).filter((r): r is string => Boolean(r)).sort();
     } catch (error) {
-      throw new AwsScanError(describeAwsFailure(error));
+      // Enumerating needs ec2:DescribeRegions, which a tightly-scoped
+      // identity predating this change may not have. Falling back to one
+      // region beats failing outright, but it is said out loud rather than
+      // silently narrowing the scan and reporting a clean result.
+      console.error(`Could not list regions (${describeAwsFailure(error)}).`);
+      console.error(`Scanning ${seedRegion} only. Grant ec2:DescribeRegions, or pass --region a,b,c.`);
+      regions = [seedRegion];
     }
   }
 

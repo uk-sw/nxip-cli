@@ -132,10 +132,13 @@ function printUsage(stream: 'out' | 'err' = 'err') {
   write(`Usage: ${CLI} scan <aws|azure> [aws|azure] [--exclude CIDR,...] [--include-shared]`);
   write('                     [--redact] [--json] [--emit-manifest] [-o FILE]');
   write('                     [--fail-on-overlap]   exit 1 if a real conflict is found');
-  write('         aws:   [--region NAME,...] [--all-regions] [--profile NAME]');
-  write('         azure: [--subscription ID,...] [--all-subscriptions]');
+  write('         aws:   [--region NAME,...] [--profile NAME]');
+  write('         azure: [--subscription ID,...]');
   write(`       ${CLI} scaffold -f <site.yaml> [-o <manifest.yaml>]`);
   write(`       ${CLI} <plan|apply> -f <manifest.yaml> [--api-key KEY] [--url URL] [--auto-approve]`);
+  write('');
+  write('Both providers scan everything by default: every AWS region, every Azure');
+  write('subscription the identity can see. Narrow with --region or --subscription.');
   write('');
   write('scan compares the networks it discovers against each other, entirely on');
   write('this machine. It never contacts nxip. To compare against what your nxip');
@@ -328,6 +331,17 @@ async function main() {
       // both clouds does not end up with two files called discovered.yaml
       // overwriting each other.
       const suggested = `${args.providers.join('-')}-discovered.yaml`;
+      // Carry forward the flags that decided what was scanned. Suggesting a
+      // bare command after a targeted scan produced a manifest covering less
+      // than the report above it, with nothing saying so.
+      const scopeFlags = [
+        args.profile ? `--profile ${args.profile}` : '',
+        args.regions?.length ? `--region ${args.regions.join(',')}` : '',
+        args.subscriptions?.length ? `--subscription ${args.subscriptions.join(',')}` : '',
+        args.exclude?.length ? `--exclude ${args.exclude.join(',')}` : '',
+        args.includeShared ? '--include-shared' : '',
+      ].filter(Boolean).join(' ');
+      const scope = scopeFlags ? ` ${scopeFlags}` : '';
 
       if (report.clusters.length > 0) {
         // Said plainly because it decides what to do next, and the previous
@@ -346,7 +360,7 @@ async function main() {
 
       console.error('');
       console.error('Turn this scan into a manifest you can review and import:');
-      console.error(`  npx nxip-cli scan ${args.providers.join(' ')} --emit-manifest -o ${suggested}`);
+      console.error(`  npx nxip-cli scan ${args.providers.join(' ')}${scope} --emit-manifest -o ${suggested}`);
       console.error('Guide: https://nx-ip.com/docs/discovery#getting-it-into-nxip');
     }
     return;

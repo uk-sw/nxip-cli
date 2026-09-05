@@ -88,6 +88,12 @@ key, free at [nx-ip.com](https://nx-ip.com/signup).
 
 ## Scanning a cloud account (`nxip scan`)
 
+**Scope:** every AWS region and every Azure subscription the identity can
+see, by default. Narrow with `--region` or `--subscription`. Scanning a
+fraction of an estate and reporting "no overlapping address space found"
+would be a false clean on the one question this answers, so the default is
+everything.
+
 **What it compares against:** the networks it discovers, against each other.
 Nothing else. It reads your cloud provider APIs, does the overlap analysis
 entirely on your machine, and exits. It never contacts nxip, needs no nxip
@@ -99,8 +105,8 @@ that is a different command: `nxip plan -f <manifest.yaml>`.
 ```bash
 nxip scan aws                          # one cloud
 nxip scan aws azure                    # both, analysed as one estate
-nxip scan aws --all-regions
-nxip scan azure --all-subscriptions
+nxip scan aws --region eu-west-2,us-east-1   # narrow it; the default is every region
+nxip scan azure --subscription <id>          # the default is every subscription
 nxip scan aws azure --exclude 192.168.0.0/16
 nxip scan aws azure --redact           # safe to share
 nxip scan aws azure --json             # machine-readable, for piping
@@ -141,7 +147,7 @@ What it reports:
 ### Turning a scan into a registry (`--emit-manifest`)
 
 ```bash
-nxip scan aws --all-regions --emit-manifest -o aws-discovered.yaml
+nxip scan aws --emit-manifest -o aws-discovered.yaml
 nxip plan -f aws-discovered.yaml
 
 # -o takes any path. Naming it after the estate keeps a two-cloud scan
