@@ -164,6 +164,62 @@ describe('the estate summary line', () => {
   });
 });
 
+describe('cloud-provisioned default networks', () => {
+  const defaults = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      id: `vpc-def-${i}`, name: null, region: `region-${i}`, cidrs: ['172.31.0.0/16'], isDefault: true,
+    }));
+
+  // AWS creates an identical 172.31.0.0/16 default VPC in every region, so
+  // an untouched account would otherwise report a conflict per region pair
+  // for boilerplate nobody deployed, burying real findings on the first run.
+  it('does not report default networks as conflicts', () => {
+    const report = analyseDiscovery(discovery({ networks: defaults(4) }));
+    expect(report.clusters).toHaveLength(0);
+    expect(report.defaultNetworks).toBe(4);
+  });
+
+  it('says what it set aside rather than deciding silently', () => {
+    const out = formatScanReport(analyseDiscovery(discovery({ networks: defaults(4) })));
+    expect(out).toContain('Ignored 4 cloud-provisioned default networks');
+    expect(out).toContain('--include-default-networks');
+  });
+
+  it('keeps them out of the manifest, since identical blocks cannot all import', () => {
+    const report = analyseDiscovery(discovery({ networks: defaults(3) }));
+    const rendered = renderDiscoveryManifest(report);
+    expect(rendered).not.toContain('172.31.0.0/16');
+    // Nothing left to declare, so the file explains itself rather than
+    // reaching `plan -f` as "must declare at least one pool or subnet".
+    expect(rendered).toContain('Nothing to import');
+    expect(rendered).toContain('--include-default-networks');
+  });
+
+  // The distinction that matters: suppression keys on the provider's own
+  // isDefault flag, never on the CIDR. Someone who deliberately built a VPC
+  // at 172.31.0.0/16 owns that address space and must still see it.
+  it('still analyses a network someone deliberately built in the same range', () => {
+    const report = analyseDiscovery(
+      discovery({
+        networks: [
+          ...defaults(3),
+          { id: 'vpc-real', name: 'legacy-dc', region: 'eu-west-1', cidrs: ['172.31.0.0/16'] },
+        ],
+      })
+    );
+    expect(report.defaultNetworks).toBe(3);
+    const manifest = parseFullManifest(renderDiscoveryManifest(report));
+    expect(manifest.subnets.map((s) => s.name)).toEqual(['legacy-dc']);
+  });
+
+  it('analyses them when asked to', () => {
+    const report = analyseDiscovery(discovery({ networks: defaults(4) }), { includeDefaultNetworks: true });
+    expect(report.defaultNetworks).toBe(0);
+    expect(report.clusters).toHaveLength(1);
+    expect(report.clusters[0].members).toHaveLength(4);
+  });
+});
+
 describe('renderDiscoveryManifest and shared ranges', () => {
   const fleet = () => ({
     provider: 'aws' as const,

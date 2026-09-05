@@ -133,12 +133,26 @@ export interface ScanReport {
   /** The underlying pairs behind `clusters`, for anything that wants them. */
   overlaps: Overlap[];
   suppressed: SuppressedOverlaps;
+  /** Cloud-provisioned default networks set aside, by the provider's own flag. */
+  defaultNetworks: number;
   totals: { networks: number; subnets: number; capacity: number; carved: number };
   /** CIDRs the analysis could not read, so the report can admit to gaps. */
   unparseable: string[];
 }
 
 export interface AnalyseOptions {
+  /**
+   * Include the cloud-provisioned default networks. Off by default: AWS
+   * creates an identical 172.31.0.0/16 default VPC in every region, so an
+   * untouched account reports a conflict per region pair for boilerplate
+   * nobody deployed and almost nobody peers, burying real findings on the
+   * one run that decides whether the tool is trusted.
+   *
+   * Keyed on the provider's own isDefault flag, never on the CIDR: a VPC
+   * someone deliberately built at 172.31.0.0/16 is their address space and
+   * is always analysed.
+   */
+  includeDefaultNetworks?: boolean;
   /** Ranges where overlap is expected. Defaults to DEFAULT_SHARED_RANGES. */
   sharedRanges?: SharedRange[];
 }
@@ -255,7 +269,16 @@ export function analyseDiscovery(
   // is the finding that matters: two VPCs sharing address space cannot be
   // peered or routed together without renumbering one of them, and nobody
   // discovers that until the day they try.
-  const blocks = discovery.networks.flatMap((network) =>
+  // Excluded by the provider's isDefault flag, never by CIDR: a VPC someone
+  // deliberately built at 172.31.0.0/16 is their own address space and must
+  // still be analysed. Only the boilerplate AWS creates on their behalf is
+  // set aside.
+  const analysable = options.includeDefaultNetworks
+    ? discovery.networks
+    : discovery.networks.filter((network) => !network.isDefault);
+  const defaultNetworks = discovery.networks.length - analysable.length;
+
+  const blocks = analysable.flatMap((network) =>
     rangesOf(network.cidrs, []).map((range) => ({
       key: `${network.id}|${range.cidr}`,
       member: { networkId: network.id, name: network.name, region: network.region, cidr: range.cidr, provider: network.provider },
@@ -307,6 +330,7 @@ export function analyseDiscovery(
     clusters: clusterOverlaps(blocks, overlaps),
     overlaps,
     suppressed: { pairs: suppressedPairs, ranges: [...suppressedBy.values()] },
+    defaultNetworks,
     totals: {
       networks: discovery.networks.length,
       subnets: discovery.subnets.length,
@@ -425,6 +449,15 @@ export function formatScanReport(report: ScanReport): string {
   // Said out loud rather than silently applied. Someone whose architecture
   // deliberately reuses a range needs to know it was recognized, and someone
   // who thinks it should not be shared needs to know how to see it.
+  if (report.defaultNetworks > 0) {
+    lines.push(
+      `Ignored ${report.defaultNetworks} cloud-provisioned default ${report.defaultNetworks === 1 ? 'network' : 'networks'}. ` +
+        'These are created for you in every region with the same block, so they overlap by design.'
+    );
+    lines.push('  Pass --include-default-networks to analyse them too.');
+    lines.push('');
+  }
+
   if (report.suppressed.pairs > 0) {
     lines.push(
       `Ignored ${report.suppressed.pairs.toLocaleString()} overlap${report.suppressed.pairs === 1 ? '' : 's'} in ranges that are expected to be shared:`
@@ -506,6 +539,8 @@ function sanitize(value: string): string {
  * cannot know which VPC is staging.
  */
 export interface ProposePoolsOptions {
+  /** Emit the cloud-provisioned default networks too. Off by default. */
+  includeDefaultNetworks?: boolean;
   /** Ranges treated as expectedly-shared. Omit to consider nothing shared. */
   sharedRanges?: SharedRange[];
   /**
@@ -520,6 +555,10 @@ export function proposePools(report: ScanReport, options: ProposePoolsOptions = 
   const proposals: ProposedPool[] = [];
 
   for (const network of report.discovery.networks) {
+    // Default networks are not part of anyone's address plan, and every
+    // region's carries the same block, so importing them is impossible as
+    // well as unwanted: the first would register and the rest collide.
+    if (network.isDefault && !options.includeDefaultNetworks) continue;
     for (const cidr of network.cidrs) {
       if (cidr.includes(':')) continue;
       const range = parseIpv4Cidr(cidr);
@@ -616,6 +655,8 @@ export interface ManifestOptions {
   sharedRanges?: SharedRange[];
   /** When true, shared-range space is emitted live rather than commented out. */
   includeShared?: boolean;
+  /** When true, cloud-provisioned default networks are emitted too. */
+  includeDefaultNetworks?: boolean;
 }
 
 export function renderDiscoveryManifest(report: ScanReport, options: ManifestOptions = {}): string {
@@ -629,10 +670,10 @@ export function renderDiscoveryManifest(report: ScanReport, options: ManifestOpt
   // either way so the discovery is never silently lost.
   const sharedOf = (pool: ProposedPool) =>
     isExpectedlyShared(pool.range.start, pool.range.end, sharedRanges);
-  const pools = proposePools(report, { sharedRanges: excludeWith });
+  const pools = proposePools(report, { sharedRanges: excludeWith, includeDefaultNetworks: options.includeDefaultNetworks });
   const heldBack = options.includeShared
     ? []
-    : proposePools(report, { sharedRanges, select: 'shared' });
+    : proposePools(report, { sharedRanges, select: 'shared', includeDefaultNetworks: options.includeDefaultNetworks });
   const derived = pools.some((p) => p.derivedEnvironment);
 
   const lines: string[] = [
@@ -747,6 +788,20 @@ export function renderDiscoveryManifest(report: ScanReport, options: ManifestOpt
 
   if (subnetLines.length > 0) {
     lines.push(...subnetLines);
+  }
+
+  // Everything discovered was set aside, so this file would fail to parse
+  // with "must declare at least one pool or subnet". Say why here rather
+  // than letting `plan -f` deliver that as its own puzzle.
+  if (pools.length === 0 && subnetLines.length === 0) {
+    lines.push('# Nothing to import.');
+    lines.push('#');
+    lines.push('# Everything discovered was set aside: cloud-provisioned default');
+    lines.push('# networks, and address space inside ranges expected to be shared.');
+    lines.push('# Neither belongs in an address plan, so there is nothing to declare.');
+    lines.push('#');
+    lines.push('# --include-default-networks or --include-shared will emit them anyway.');
+    lines.push('');
   }
 
   if (orphans.length > 0) {

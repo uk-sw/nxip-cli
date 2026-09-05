@@ -27,6 +27,7 @@ interface ParsedArgs {
   emitManifest: boolean;
   exclude?: string[];
   includeShared: boolean;
+  includeDefaultNetworks: boolean;
   redact: boolean;
   providers: string[];
   subscriptions?: string[];
@@ -43,6 +44,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     json: false,
     emitManifest: false,
     includeShared: false,
+    includeDefaultNetworks: false,
     redact: false,
     providers: [],
     allSubscriptions: false,
@@ -83,6 +85,8 @@ function parseArgs(argv: string[]): ParsedArgs {
       args.exclude = (rest[++i] ?? '').split(',').map((r) => r.trim()).filter(Boolean);
     } else if (arg === '--include-shared') {
       args.includeShared = true;
+    } else if (arg === '--include-default-networks') {
+      args.includeDefaultNetworks = true;
     } else if (arg === '--redact') {
       args.redact = true;
     } else if (arg === '--subscription') {
@@ -130,6 +134,7 @@ function loadManifest(file: string | undefined): Manifest | null {
 function printUsage(stream: 'out' | 'err' = 'err') {
   const write = stream === 'out' ? console.log : console.error;
   write(`Usage: ${CLI} scan <aws|azure> [aws|azure] [--exclude CIDR,...] [--include-shared]`);
+  write('                     [--include-default-networks]');
   write('                     [--redact] [--json] [--emit-manifest] [-o FILE]');
   write('                     [--fail-on-overlap]   exit 1 if a real conflict is found');
   write('         aws:   [--region NAME,...] [--profile NAME]');
@@ -285,10 +290,10 @@ async function main() {
       return;
     }
 
-    const report = analyseDiscovery(discovery, { sharedRanges });
+    const report = analyseDiscovery(discovery, { sharedRanges, includeDefaultNetworks: args.includeDefaultNetworks });
 
     const output = args.emitManifest
-      ? renderDiscoveryManifest(report, { sharedRanges: configuredShared, includeShared: args.includeShared })
+      ? renderDiscoveryManifest(report, { sharedRanges: configuredShared, includeShared: args.includeShared, includeDefaultNetworks: args.includeDefaultNetworks })
       : args.json
         ? `${JSON.stringify(report, null, 2)}\n`
         : formatScanReport(report);
@@ -297,6 +302,13 @@ async function main() {
       console.error(
         'Note: --redact replaces the network and subnet ids this manifest records as provenance, so the link back to the real resources is lost. Useful for sharing an example, not for loading your own estate.'
       );
+    }
+
+    // An emitted manifest with nothing in it will not parse, so it is worth
+    // saying at the moment it is written rather than at `plan -f`.
+    if (args.emitManifest && report.totals.networks > 0 && !output.includes('\nsubnets:')) {
+      console.error('Nothing to import: everything discovered was a default network or shared-range space.');
+      console.error('Use --include-default-networks or --include-shared to emit them anyway.');
     }
 
     if (args.output) {

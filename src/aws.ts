@@ -62,6 +62,13 @@ export async function discoverAws(options: {
       const response = await client.send(new DescribeRegionsCommand({}));
       regions = (response.Regions ?? []).map((r) => r.RegionName).filter((r): r is string => Boolean(r)).sort();
     } catch (error) {
+      // Missing or rejected credentials are not a permissions problem, and
+      // narrowing to one region only reaches the same failure a step later
+      // while advising a fix (grant ec2:DescribeRegions) that would not have
+      // helped. Say the one true thing instead.
+      if (isCredentialsFailure(error)) {
+        throw new AwsScanError(describeAwsFailure(error));
+      }
       // Enumerating needs ec2:DescribeRegions, which a tightly-scoped
       // identity predating this change may not have. Falling back to one
       // region beats failing outright, but it is said out loud rather than
@@ -141,6 +148,19 @@ async function resolveAccountId(region: string): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * Whether the identity itself is the problem (absent, expired or rejected),
+ * as opposed to a valid identity lacking one permission. The two want
+ * opposite responses: stop, versus carry on with less.
+ */
+function isCredentialsFailure(error: unknown): boolean {
+  const name = error instanceof Error ? error.name : '';
+  const message = error instanceof Error ? error.message : String(error);
+  return /CredentialsProviderError|Could not load credentials|AuthFailure|ExpiredToken|InvalidClientTokenId/i.test(
+    name + message
+  );
 }
 
 /** Turns SDK errors into something a person can act on. */

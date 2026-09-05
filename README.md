@@ -227,6 +227,41 @@ Ignored 300 overlaps in ranges that are expected to be shared:
 Add your own conventions with `--exclude 192.168.0.0/16,172.20.0.0/14`, or
 turn the whole thing off with `--include-shared`.
 
+### Default VPCs are left alone
+
+AWS creates a default VPC in every region of every account, and it is
+`172.31.0.0/16` in all of them. Enable 17 regions and you have 17 identical
+networks nobody deployed, producing 136 pairwise overlaps between them. On an
+untouched account that is the whole report, and a real finding is buried
+under it.
+
+Default networks are therefore set aside: not compared, not counted as
+conflicts, and not written into the manifest. As with shared ranges, nothing
+happens silently:
+
+```
+No overlapping VPC address space found.
+
+Ignored 4 cloud-provisioned default networks (use --include-default-networks to analyse them).
+```
+
+**This is keyed on the provider's `isDefault` flag, never on the CIDR.**
+`172.31.0.0/16` is not a blocklisted range. A VPC you deliberately built at
+`172.31.0.0/16` is address space you own, so it is analysed like any other
+network, reported if it collides, and imported by name. Deleting the default
+VPC and building your own in its place is a normal thing to have done, and it
+is exactly what a CIDR-based rule would get wrong.
+
+`--include-default-networks` analyses them anyway. Worth running once: a
+default VPC that has been peered, or has had subnets built in it, has stopped
+being boilerplate and belongs in your plan.
+
+They always appear in the inventory, marked `[default]`, whether or not they
+are being analysed. Only the conflict analysis skips them.
+
+Azure has no equivalent, since it does not create VNets for you. Every VNet a
+scan finds there is one somebody made, and all of them are analysed.
+
 ### Sharing a report safely (`--redact`)
 
 A scan report names your accounts, subscriptions, VPCs and VNets. None of
