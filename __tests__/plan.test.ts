@@ -135,6 +135,34 @@ describe('findCrossPoolOverlaps', () => {
     expect(found).toHaveLength(0);
   });
 
+  // Regression. A nested entry inherits its pool from its parent and has no
+  // environment or region of its own, so comparing on those never matched
+  // the "this is its own target pool" skip, and every pool containing the
+  // child was reported as a cross-region overlap. It flagged the pool the
+  // child was legitimately going into.
+  it('does not flag a nested entry against the pool it legitimately lands in', () => {
+    const found = findCrossPoolOverlaps(
+      [
+        { name: 'vnet', parent: undefined, body: { family: 'IPV4' as const, cidr: '10.100.1.0/24', environment: 'production', region: 'eastus' } },
+        { name: 'default', parent: 'vnet', body: { family: 'IPV4' as const, cidr: '10.100.1.0/26' } },
+      ],
+      [pool('production-eastus-pool', '10.100.1.0/20', 'production', 'eastus')]
+    );
+    expect(found).toHaveLength(0);
+  });
+
+  // The parent is still checked, so a genuinely misplaced network is caught.
+  it('still flags the parent when the network itself is misplaced', () => {
+    const found = findCrossPoolOverlaps(
+      [
+        { name: 'vnet', parent: undefined, body: { family: 'IPV4' as const, cidr: '10.100.1.0/24', environment: 'production', region: 'brazilsouth' } },
+        { name: 'default', parent: 'vnet', body: { family: 'IPV4' as const, cidr: '10.100.1.0/26' } },
+      ],
+      [pool('production-eastus-pool', '10.100.0.0/16', 'production', 'eastus')]
+    );
+    expect(found.map((f) => f.entry.name)).toEqual(['vnet']);
+  });
+
   it('renders nothing when there is nothing to warn about', () => {
     expect(formatCrossPoolOverlaps([])).toBe('');
   });

@@ -44,6 +44,15 @@ export function findCrossPoolOverlaps(
   const findings: { entry: ManifestEntry; pool: import('./types.js').NxipPool }[] = [];
 
   for (const entry of entries) {
+    // Nested entries are excluded, and not as a convenience. A child's pool
+    // is inherited from its parent, so it cannot land anywhere its parent
+    // did not: if the parent is placed correctly the child is too, and if
+    // the parent is misplaced the parent is already reported. It also has
+    // no environment or region of its own, so the "this is its own target
+    // pool" test below has nothing to compare and would flag the pool the
+    // child is legitimately going into.
+    if (entry.parent) continue;
+
     const cidr = entry.body.cidr;
     if (!cidr || entry.body.family !== 'IPV4') continue;
     const range = parseIpv4Cidr(cidr);
