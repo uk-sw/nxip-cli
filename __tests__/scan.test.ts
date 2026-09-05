@@ -347,8 +347,12 @@ describe('renderDiscoveryManifest', () => {
     );
     // parseManifest rejects duplicate names outright, so this would throw if
     // the de-duplication were missing.
+    //
+    // Qualified by network rather than counter-suffixed: these are the names
+    // the subnets are really created with, and "private-2" says nothing
+    // about which network it belongs to.
     const entries = childrenOf(parseManifest(renderDiscoveryManifest(duplicated)));
-    expect(entries.map((e) => e.name)).toEqual(['private', 'private-2']);
+    expect(entries.map((e) => e.name)).toEqual(['private', 'prod-private']);
   });
 
   it('falls back to the subnet id when AWS has no Name tag', () => {

@@ -716,10 +716,18 @@ export function renderDiscoveryManifest(report: ScanReport, options: ManifestOpt
       continue;
     }
 
+    // These are the names the subnets are actually created with, so a bare
+    // counter is not good enough: "default" and "default-2" say nothing
+    // about which network each belongs to, and clouds hand out the same
+    // subnet names in every VNet. On a clash, qualify with the network,
+    // which is the thing that actually distinguishes them.
     const base = subnet.name ?? subnet.id;
     let name = base;
-    let suffix = 2;
-    while (used.has(name)) name = `${base}-${suffix++}`;
+    if (used.has(name)) {
+      name = `${pool.name}-${base}`;
+      let suffix = 2;
+      while (used.has(name)) name = `${pool.name}-${base}-${suffix++}`;
+    }
     used.add(name);
 
     subnetLines.push(`  - name: ${JSON.stringify(name)}`);

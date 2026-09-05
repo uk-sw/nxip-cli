@@ -22,6 +22,9 @@ subnets:
           region: 'us-east-1',
           parentSubnetId: undefined,
           kind: undefined,
+          // Sent to the API now: an imported estate used to arrive as a set
+          // of unnamed CIDRs because this was withheld as "CLI output only".
+          name: 'payments',
           description: undefined,
           metadata: undefined,
         },

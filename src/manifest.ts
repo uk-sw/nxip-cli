@@ -68,7 +68,11 @@ const manifestSchema = z
   });
 
 export interface ManifestEntry {
-  /** The manifest's own name for this subnet - not sent to the API, used only for CLI output. */
+  /**
+   * The subnet's name. Doubles as this file's own key for `parent`
+   * references, so it must be unique within the manifest, and is sent to
+   * the API as the subnet's real name.
+   */
   name: string;
   /**
    * Name of another entry in this same file that this one nests under.
@@ -177,6 +181,12 @@ export function parseFullManifest(rawYaml: string): Manifest {
       region: entry.region,
       parentSubnetId: entry.parent_subnet_id,
       kind: entry.kind,
+      // Previously withheld as "CLI output only". That was defensible when
+      // manifests were hand-written and the name was just a label, and
+      // wrong once --emit-manifest started carrying real Azure resource
+      // names and AWS Name tags: an imported estate arrived as a set of
+      // unnamed CIDRs with the provenance silently dropped.
+      name: entry.name,
       description: entry.description,
       metadata: entry.metadata,
     },

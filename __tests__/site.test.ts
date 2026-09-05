@@ -105,7 +105,13 @@ sizing:
   staging: 26
 `);
 
+    // The round trip now carries name through into the body as well, since
+    // that is what reaches the API. Compared field by field rather than by
+    // reconstructing the expected shape, so this stays a round-trip test.
     const reparsed = parseManifest(renderManifest(entries));
-    expect(reparsed).toEqual(entries);
+    expect(reparsed.map((e) => e.name)).toEqual(entries.map((e) => e.name));
+    for (const [i, entry] of entries.entries()) {
+      expect(reparsed[i].body).toMatchObject({ ...entry.body, name: entry.name });
+    }
   });
 });
