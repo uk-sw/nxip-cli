@@ -740,6 +740,17 @@ export function renderDiscoveryManifest(report: ScanReport, options: ManifestOpt
   const subnetLines: string[] = [];
   const used = new Set<string>();
   const orphans: string[] = [];
+  const defaultNetworkSubnets: string[] = [];
+
+  // A suppressed default network takes its subnets with it. They would
+  // otherwise land in the orphan bucket below and be explained as an
+  // unreadable CIDR association, which is a different problem entirely and
+  // would send someone to check a network that is behaving perfectly.
+  const suppressedDefaults = new Set(
+    report.defaultNetworks > 0
+      ? report.discovery.networks.filter((n) => n.isDefault).map((n) => n.id)
+      : []
+  );
 
   for (const subnet of report.discovery.subnets) {
     if (subnet.cidr.includes(':')) continue;
@@ -753,7 +764,11 @@ export function renderDiscoveryManifest(report: ScanReport, options: ManifestOpt
       (p) => p.networkId === subnet.networkId && range.start >= p.range.start && range.end <= p.range.end
     );
     if (!pool) {
-      orphans.push(`${subnet.cidr} in ${subnet.networkId}`);
+      if (suppressedDefaults.has(subnet.networkId)) {
+        defaultNetworkSubnets.push(`${subnet.cidr} in ${subnet.networkId}`);
+      } else {
+        orphans.push(`${subnet.cidr} in ${subnet.networkId}`);
+      }
       continue;
     }
 
@@ -801,6 +816,14 @@ export function renderDiscoveryManifest(report: ScanReport, options: ManifestOpt
     lines.push('# Neither belongs in an address plan, so there is nothing to declare.');
     lines.push('#');
     lines.push('# --include-default-networks or --include-shared will emit them anyway.');
+    lines.push('');
+  }
+
+  if (defaultNetworkSubnets.length > 0) {
+    lines.push('# Left out: subnets of cloud-provisioned default networks, which are');
+    lines.push('# not part of an address plan. Nothing is wrong with these.');
+    lines.push('# Pass --include-default-networks to bring them in.');
+    for (const entry of defaultNetworkSubnets) lines.push(`#   ${entry}`);
     lines.push('');
   }
 

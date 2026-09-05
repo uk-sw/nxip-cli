@@ -212,6 +212,44 @@ describe('cloud-provisioned default networks', () => {
     expect(manifest.subnets.map((s) => s.name)).toEqual(['legacy-dc']);
   });
 
+  // A suppressed network takes its subnets with it, and they used to land
+  // in the orphan bucket, explained as an unreadable CIDR association. That
+  // sent people to investigate a default VPC that was behaving perfectly.
+  it('explains left-out subnets by the reason they were actually left out', () => {
+    const report = analyseDiscovery(
+      discovery({
+        networks: [
+          { id: 'vpc-def-0', name: null, region: 'us-east-1', cidrs: ['172.31.0.0/16'], isDefault: true },
+          { id: 'vpc-prod', name: 'prod', region: 'eu-west-1', cidrs: ['10.20.0.0/16'] },
+        ],
+        subnets: [
+          { id: 'subnet-def-a', name: null, networkId: 'vpc-def-0', region: 'us-east-1', cidr: '172.31.0.0/20' },
+          { id: 'subnet-prod-a', name: 'prod-app', networkId: 'vpc-prod', region: 'eu-west-1', cidr: '10.20.1.0/24' },
+        ],
+      })
+    );
+    const rendered = renderDiscoveryManifest(report);
+    expect(rendered).toContain('subnets of cloud-provisioned default networks');
+    expect(rendered).toContain('172.31.0.0/20 in vpc-def-0');
+    expect(rendered).not.toContain('could not read');
+  });
+
+  it('still reports a genuine orphan as one', () => {
+    const report = analyseDiscovery(
+      discovery({
+        networks: [{ id: 'vpc-prod', name: 'prod', region: 'eu-west-1', cidrs: ['10.20.0.0/16'] }],
+        // Outside every block its network declares, the case the orphan
+        // note is actually about.
+        subnets: [
+          { id: 'subnet-stray', name: 'stray', networkId: 'vpc-prod', region: 'eu-west-1', cidr: '10.99.1.0/24' },
+        ],
+      })
+    );
+    const rendered = renderDiscoveryManifest(report);
+    expect(rendered).toContain('could not read');
+    expect(rendered).not.toContain('cloud-provisioned default networks');
+  });
+
   it('analyses them when asked to', () => {
     const report = analyseDiscovery(discovery({ networks: defaults(4) }), { includeDefaultNetworks: true });
     expect(report.defaultNetworks).toBe(0);
