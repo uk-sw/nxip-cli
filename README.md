@@ -419,3 +419,28 @@ npm run typecheck
 npm test
 npm run build
 ```
+
+## Credentials
+
+**AWS.** The credential chain is the standard one, so anything you already use
+works. In order of preference: **IAM Identity Center or an assumed role**
+(`aws sso login`, then `AWS_PROFILE=...`), because nothing long-lived is
+stored and the credentials expire on their own; **an IAM role** in CI, also
+keyless; **a named profile** holding an access key, which at least keeps the
+secret in a permission-restricted file rather than in every child process's
+environment; and **environment variables** last, if you have no AWS CLI
+installed, since that is a bearer secret with no MFA sitting in your shell.
+
+The whole read-only policy, including what `--all-regions` needs:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": ["ec2:DescribeVpcs", "ec2:DescribeSubnets", "ec2:DescribeRegions"],
+    "Resource": "*"
+  }]
+}
+```
+
