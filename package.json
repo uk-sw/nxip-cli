@@ -1,6 +1,6 @@
 {
   "name": "nxip-cli",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Scan AWS and Azure for overlapping CIDRs and wasted IP space across clouds, and manage IP allocation with plan/apply - no Terraform required",
   "keywords": [
     "ipam",

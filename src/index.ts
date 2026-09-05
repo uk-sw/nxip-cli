@@ -184,7 +184,11 @@ async function main() {
   // Otherwise a bare `npx nxip-cli` greets a first-time user with "Missing
   // API key", which is both unhelpful and untrue for the two commands that
   // do not need one.
-  if (!args.command || args.command === 'help' || args.command === '--help' || args.command === '-h') {
+  // Asking for help after a subcommand (`nxip scan --help`) is at least as
+  // natural as asking before one, and used to fall through to "Missing
+  // provider" and exit 1, which reads as a failure rather than an answer.
+  const wantsHelp = process.argv.slice(2).some((a) => a === '--help' || a === '-h' || a === 'help');
+  if (!args.command || wantsHelp) {
     printUsage('out');
     return;
   }
