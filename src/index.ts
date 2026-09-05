@@ -324,17 +324,30 @@ async function main() {
     }
 
     if (!args.emitManifest && !args.json && report.totals.networks > 0) {
-      console.error(
-        report.clusters.length > 0
-          ? '\nWant these checked before the next terraform apply, not after?'
-          : '\nWant this tracked continuously as your estate changes?'
-      );
       // Name the file after what was actually scanned, so an estate with
       // both clouds does not end up with two files called discovered.yaml
       // overwriting each other.
       const suggested = `${args.providers.join('-')}-discovered.yaml`;
-      console.error(`Load it in:  npx nxip-cli scan ${args.providers.join(' ')} --emit-manifest -o ${suggested}`);
-      console.error('Guide:       https://nx-ip.com/docs/discovery#getting-it-into-nxip');
+
+      if (report.clusters.length > 0) {
+        // Said plainly because it decides what to do next, and the previous
+        // wording jumped straight to offering an import that cannot fully
+        // succeed while a conflict exists: nxip will not record two
+        // networks owning the same addresses, so the second one is refused.
+        console.error('\nThese conflicts are in your cloud, not in nxip. Importing both sides');
+        console.error('would ask nxip to record two networks owning the same addresses, which');
+        console.error('it refuses by design. Renumber one side first, or import the rest and');
+        console.error('leave the conflict out until it is resolved.');
+      } else {
+        console.error('\nNothing overlaps today. Import it and nxip keeps it that way: every');
+        console.error('later allocation comes from a pool that cannot hand out a block already');
+        console.error('in use.');
+      }
+
+      console.error('');
+      console.error('Turn this scan into a manifest you can review and import:');
+      console.error(`  npx nxip-cli scan ${args.providers.join(' ')} --emit-manifest -o ${suggested}`);
+      console.error('Guide: https://nx-ip.com/docs/discovery#getting-it-into-nxip');
     }
     return;
   }
