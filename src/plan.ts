@@ -137,6 +137,14 @@ export function formatPlan(planned: PlannedSubnet[]): string {
       wouldFail++;
       lines.push(`  # ${item.name} would fail`);
       lines.push(`  x reason:  ${item.result.reason}`);
+      // A failure has no allocated subnet to report, so this comes from what
+      // was asked for. Without it the reader knows which entry failed but not
+      // which block, and has to go back to the manifest to find out.
+      if (item.body.cidr) {
+        lines.push(`    cidr:    ${item.body.cidr}`);
+      } else if (item.body.prefixLength !== undefined) {
+        lines.push(`    size:    /${item.body.prefixLength}`);
+      }
       lines.push(`    message: ${item.result.message}`);
       lines.push('');
     }

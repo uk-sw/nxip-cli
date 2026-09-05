@@ -151,3 +151,30 @@ describe('findCrossPoolOverlaps', () => {
     expect(out).toContain('region-alpha');
   });
 });
+
+describe('formatPlan failures name the block', () => {
+  const failure = (name: string, body: Record<string, unknown>) => ({
+    name,
+    body: { family: 'IPV4' as const, ...body },
+    result: { wouldSucceed: false as const, reason: 'no-pool', message: 'No matching IPV4 IP pool found.' },
+  });
+
+  // A failure has no allocated subnet, so the block has to come from the
+  // request. Without it you know which entry failed but not which CIDR,
+  // and have to go back to the manifest to find out.
+  it('shows the requested cidr when one was pinned', () => {
+    const out = formatPlan([failure('koreasouth-vnet', { cidr: '10.250.0.0/23' })] as never);
+    expect(out).toContain('cidr:    10.250.0.0/23');
+  });
+
+  it('shows the requested size when allocating by prefix length', () => {
+    const out = formatPlan([failure('payments', { prefixLength: 24 })] as never);
+    expect(out).toContain('size:    /24');
+  });
+
+  it('adds no such line when neither was given', () => {
+    const out = formatPlan([failure('odd', {})] as never);
+    expect(out).not.toContain('cidr:');
+    expect(out).not.toContain('size:');
+  });
+});
