@@ -189,7 +189,8 @@ describe('collisions in an emitted manifest', () => {
 
   it('says what to do about it, not just that it happened', () => {
     const rendered = renderDiscoveryManifest(colliding());
-    expect(rendered).toContain('Renumber one side');
+    expect(rendered).toContain('comment that entry');
+    expect(rendered).toContain('uncomment the other');
   });
 
   // The terminal and the manifest had drifted into describing one finding
@@ -239,6 +240,52 @@ describe('collisions in an emitted manifest', () => {
     const rendered = renderDiscoveryManifest(three);
     expect(rendered).toContain('overlap across 3');
     expect(rendered.split('\n').some((l) => l.includes(' vs '))).toBe(false);
+  });
+
+  // Without this the manifest listed both sides, applied the first, and
+  // failed on the second, leaving a half-imported estate and an error about
+  // a duplicate rather than about the collision.
+  it('comments out the losing side so the file applies cleanly as written', () => {
+    const rendered = renderDiscoveryManifest(colliding());
+    const parsed = parseFullManifest(rendered);
+
+    // The larger block is kept; the /17 inside it is commented out.
+    expect(parsed.subnets.map((e) => e.name)).toEqual(['prod-vpc']);
+    expect(rendered).toContain('# COMMENTED OUT');
+    // Still present and readable, just not live.
+    expect(rendered).toContain('corp-vnet');
+  });
+
+  it('takes the commented-out network\'s subnets with it', () => {
+    const withChildren = analyseDiscovery(
+      discovery({
+        networks: [
+          { id: 'vpc-a', name: 'prod-vpc', region: 'eu-west-1', cidrs: ['10.20.0.0/16'] },
+          { id: 'vnet-b', name: 'corp-vnet', region: 'uksouth', cidrs: ['10.20.128.0/17'] },
+        ],
+        subnets: [
+          { id: 's1', name: 'web', networkId: 'vpc-a', region: 'eu-west-1', cidr: '10.20.1.0/24' },
+          { id: 's2', name: 'corp-app', networkId: 'vnet-b', region: 'uksouth', cidr: '10.20.130.0/24' },
+        ],
+      })
+    );
+    const parsed = parseFullManifest(renderDiscoveryManifest(withChildren));
+    // corp-app would name a parent that never gets created, so it goes too.
+    expect(parsed.subnets.map((e) => e.name).sort()).toEqual(['prod-vpc', 'web']);
+  });
+
+  // The same scan must always produce the same file, or a re-run looks like
+  // a change and a diff becomes meaningless.
+  it('picks the same winner every time', () => {
+    const first = renderDiscoveryManifest(colliding());
+    const second = renderDiscoveryManifest(colliding());
+    expect(first).toBe(second);
+  });
+
+  it('says the choice was made and how to reverse it', () => {
+    const rendered = renderDiscoveryManifest(colliding());
+    expect(rendered).toContain('been commented out for you');
+    expect(rendered).toContain('a guess about your network');
   });
 
   // scan never contacts nxip, so it can only speak for what it discovered.
@@ -798,7 +845,16 @@ describe('cross-cloud analysis', () => {
   });
 
   it('emits one manifest covering both clouds', () => {
-    const entries = childrenOf(parseManifest(renderDiscoveryManifest(analyseDiscovery([aws, azure]))));
+    // Distinct blocks on purpose: this is about the merge, not about
+    // collisions. The shared fixture above overlaps deliberately, and a
+    // colliding pair now has one side commented out, which would make this
+    // assert the wrong thing.
+    const azureApart: Discovery = {
+      ...azure,
+      networks: [{ ...azure.networks[0], cidrs: ['10.50.0.0/16'] }],
+      subnets: [{ ...azure.subnets[0], cidr: '10.50.2.0/24' }],
+    };
+    const entries = childrenOf(parseManifest(renderDiscoveryManifest(analyseDiscovery([aws, azureApart]))));
     expect(entries).toHaveLength(2);
     expect(entries.map((e) => e.body.metadata?.source).sort()).toEqual(['aws-scan', 'azure-scan']);
   });

@@ -773,12 +773,42 @@ export function renderDiscoveryManifest(report: ScanReport, options: ManifestOpt
     lines.push('# what nxip already holds; `plan` does that, and can find more.');
     lines.push('#');
     lines.push('# nxip refuses to record two networks owning the same addresses, so');
-    lines.push('# applying both sides of a conflict cannot succeed. Renumber one side');
-    lines.push('# first, or delete the entry you do not want and import the rest.');
+    lines.push('# both sides cannot be registered. One side of each collision below has');
+    lines.push('# been commented out for you, so this file applies cleanly as written.');
+    lines.push('#');
+    lines.push('# The side kept is the largest block, which is a guess about your network');
+    lines.push('# rather than a judgement. If the wrong one was kept, comment that entry');
+    lines.push('# out and uncomment the other. Nothing is lost either way: the commented');
+    lines.push('# entries are still here, and importing neither side is also valid while');
+    lines.push('# you renumber.');
     lines.push('#');
     lines.push(...formatOverlapClusters(report, '#'));
     lines.push('# These cannot be peered or routed to each other without renumbering one side.');
     lines.push('');
+  }
+
+  // Both sides of a collision cannot be registered: nxip refuses to record
+  // two networks owning the same addresses, so an untouched manifest would
+  // apply the first and fail on the second, leaving a half-imported estate
+  // and an error about a duplicate. So one side of each collision is kept
+  // and the rest are commented out, which makes the file apply cleanly as
+  // written while losing nothing: the commented entries are still there,
+  // still readable, and uncommenting one is the whole of the manual step.
+  //
+  // The winner is the largest block, tie-broken on network id so the same
+  // scan always produces the same file. Largest rather than first-seen
+  // because the broader claim on address space is the more useful thing to
+  // hold: anything inside it can be added later as a nested subnet under
+  // it, which is not true the other way round. It is still a guess about
+  // somebody else's network, so the comment block says so.
+  const collisionLosers = new Set<string>();
+  for (const cluster of report.clusters) {
+    const ranked = [...cluster.members].sort((a, b) => {
+      const pa = parseIpv4Cidr(a.cidr)?.prefixLength ?? 32;
+      const pb = parseIpv4Cidr(b.cidr)?.prefixLength ?? 32;
+      return pa - pb || a.networkId.localeCompare(b.networkId);
+    });
+    for (const loser of ranked.slice(1)) collisionLosers.add(loser.networkId);
   }
 
   lines.push('subnets:');
@@ -789,18 +819,28 @@ export function renderDiscoveryManifest(report: ScanReport, options: ManifestOpt
       lines.push(`  # Discovered inside ${shared.cidr}, a range expected to be shared.`);
       lines.push('  # Registered here only because --include-shared was passed.');
     }
-    lines.push(`  - name: ${JSON.stringify(pool.name)}`);
-    lines.push(`    cidr: ${JSON.stringify(pool.cidr)}`);
-    lines.push(`    family: IPV4`);
-    lines.push(`    environment: ${JSON.stringify(pool.environment)}`);
-    lines.push(`    region: ${JSON.stringify(pool.region)}`);
+    const lost = collisionLosers.has(pool.networkId);
+    if (lost) {
+      lines.push('  # COMMENTED OUT: collides with another network in this file, and nxip');
+      lines.push('  # cannot register both. Uncomment this and comment out the other side');
+      lines.push('  # if this is the one you want, or renumber and re-scan.');
+    }
+
+    const entry: string[] = [];
+    entry.push(`  - name: ${JSON.stringify(pool.name)}`);
+    entry.push(`    cidr: ${JSON.stringify(pool.cidr)}`);
+    entry.push(`    family: IPV4`);
+    entry.push(`    environment: ${JSON.stringify(pool.environment)}`);
+    entry.push(`    region: ${JSON.stringify(pool.region)}`);
     // Structural, so the cloud subnets inside it have something to nest
     // under rather than colliding with it as siblings.
-    lines.push(`    kind: ${JSON.stringify(pool.provider === 'azure' ? 'vnet' : 'vpc')}`);
-    lines.push(`    metadata:`);
-    lines.push(`      source: ${JSON.stringify(`${pool.provider ?? 'cloud'}-scan`)}`);
-    lines.push(`      network_id: ${JSON.stringify(pool.networkId)}`);
-    if (pool.account) lines.push(`      account: ${JSON.stringify(pool.account)}`);
+    entry.push(`    kind: ${JSON.stringify(pool.provider === 'azure' ? 'vnet' : 'vpc')}`);
+    entry.push(`    metadata:`);
+    entry.push(`      source: ${JSON.stringify(`${pool.provider ?? 'cloud'}-scan`)}`);
+    entry.push(`      network_id: ${JSON.stringify(pool.networkId)}`);
+    if (pool.account) entry.push(`      account: ${JSON.stringify(pool.account)}`);
+
+    lines.push(...(lost ? entry.map((line) => `# ${line}`) : entry));
     lines.push('');
   }
 
@@ -808,6 +848,7 @@ export function renderDiscoveryManifest(report: ScanReport, options: ManifestOpt
   const used = new Set<string>();
   const orphans: string[] = [];
   const defaultNetworkSubnets: string[] = [];
+  const collisionLoserSubnets: string[] = [];
 
   // A suppressed default network takes its subnets with it. They would
   // otherwise land in the orphan bucket below and be explained as an
@@ -830,6 +871,14 @@ export function renderDiscoveryManifest(report: ScanReport, options: ManifestOpt
     const pool = pools.find(
       (p) => p.networkId === subnet.networkId && range.start >= p.range.start && range.end <= p.range.end
     );
+    // A commented-out network takes its subnets with it: they name it as
+    // their `parent`, so leaving them live would fail on a parent that was
+    // never created.
+    if (collisionLosers.has(subnet.networkId)) {
+      collisionLoserSubnets.push(`${subnet.cidr} in ${subnet.networkId}`);
+      continue;
+    }
+
     if (!pool) {
       if (suppressedDefaults.has(subnet.networkId)) {
         defaultNetworkSubnets.push(`${subnet.cidr} in ${subnet.networkId}`);
@@ -883,6 +932,14 @@ export function renderDiscoveryManifest(report: ScanReport, options: ManifestOpt
     lines.push('# Neither belongs in an address plan, so there is nothing to declare.');
     lines.push('#');
     lines.push('# --include-default-networks or --include-shared will emit them anyway.');
+    lines.push('');
+  }
+
+  if (collisionLoserSubnets.length > 0) {
+    lines.push('# Left out with their network: these belong to a network commented out');
+    lines.push('# above because it collides. They would name a parent that never gets');
+    lines.push('# created. Uncomment them alongside their network if you switch sides.');
+    for (const entry of collisionLoserSubnets) lines.push(`#   ${entry}`);
     lines.push('');
   }
 
