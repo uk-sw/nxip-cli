@@ -212,6 +212,35 @@ describe('collisions in an emitted manifest', () => {
     }
   });
 
+  // Two networks is the common case and reads better on one line; three
+  // does not fit, so the aligned list takes over. Both shapes come from the
+  // same formatter, so the report and the manifest cannot disagree.
+  it('puts a two-network collision on one line, with the provider', () => {
+    const rendered = renderDiscoveryManifest(colliding());
+    const line = rendered.split('\n').find((l) => l.includes(' vs '));
+    expect(line).toBeDefined();
+    expect(line).toContain('corp-vnet');
+    expect(line).toContain('prod-vpc');
+    // Under a hundred characters, which is why the one-line form is only
+    // used for two members.
+    expect(line!.length).toBeLessThan(100);
+  });
+
+  it('falls back to the aligned list once a collision has three members', () => {
+    const three = analyseDiscovery(
+      discovery({
+        networks: [
+          { id: 'vpc-a', name: 'prod-vpc', region: 'eu-west-1', cidrs: ['10.20.0.0/16'] },
+          { id: 'vnet-b', name: 'corp-vnet', region: 'uksouth', cidrs: ['10.20.128.0/17'] },
+          { id: 'vpc-c', name: 'data-vpc', region: 'us-east-1', cidrs: ['10.20.0.0/16'] },
+        ],
+      })
+    );
+    const rendered = renderDiscoveryManifest(three);
+    expect(rendered).toContain('overlap across 3');
+    expect(rendered.split('\n').some((l) => l.includes(' vs '))).toBe(false);
+  });
+
   // scan never contacts nxip, so it can only speak for what it discovered.
   // Claiming more than that is a clean bill of health it cannot give, and
   // the contradiction would arrive as a failed apply against a pool it

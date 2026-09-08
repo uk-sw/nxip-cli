@@ -373,6 +373,30 @@ export function formatOverlapClusters(report: ScanReport, prefix = ''): string[]
   const lines: string[] = [];
 
   for (const cluster of report.clusters) {
+    // Two networks is the common case and reads better on one line: "A vs B"
+    // is legible at a glance, where a header plus two rows spends four lines
+    // restating what the rows already show. Past two it stops working, since
+    // three members run well over a hundred characters and wrap, so the
+    // aligned list takes over. One formatter, one branch, still nothing to
+    // keep in step.
+    const where = (m: (typeof cluster.members)[number]) =>
+      m.provider ? `${m.provider}/${m.region}` : m.region;
+
+    if (cluster.members.length === 2) {
+      const [a, b] = cluster.members;
+      const verb = cluster.identical ? 'and' : 'vs';
+      // Name only, not label(), which appends the id and would give two
+      // bracketed groups per side and a line past a hundred characters. The
+      // id is still in the manifest's own metadata for anything that needs it.
+      const who = (m: (typeof cluster.members)[number]) => m.name ?? m.networkId;
+      lines.push(
+        `${prefix}  ${who(a)} (${where(a)}) ${a.cidr}  ${verb}  ${who(b)} (${where(b)}) ${b.cidr}`
+      );
+      lines.push(`${prefix}    ${cluster.sharedAddresses.toLocaleString()} addresses in common at most`);
+      lines.push(prefix.trimEnd());
+      continue;
+    }
+
     const cidrs = [...new Set(cluster.members.map((m) => m.cidr))];
     lines.push(
       cluster.identical
