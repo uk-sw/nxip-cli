@@ -315,6 +315,19 @@ async function main() {
       console.error('Use --include-default-networks or --include-shared to emit them anyway.');
     }
 
+    // Said on stderr as well as in the file. Someone redirecting to -o may
+    // never open the manifest before running plan, and this decides what
+    // they should do next rather than merely describing what was found.
+    if (args.emitManifest && report.clusters.length > 0) {
+      const count = report.clusters.length;
+      console.error(
+        `\nWARNING: ${count} address collision${count === 1 ? '' : 's'} found. The manifest lists both sides,`
+      );
+      console.error('and nxip refuses to record two networks owning the same addresses, so');
+      console.error('applying it as-is cannot fully succeed. See the WARNING block at the top');
+      console.error('of the file, and renumber or remove one side before applying.');
+    }
+
     if (args.output) {
       writeFileSync(args.output, output, 'utf-8');
       console.log(

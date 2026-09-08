@@ -164,6 +164,57 @@ describe('the estate summary line', () => {
   });
 });
 
+describe('collisions in an emitted manifest', () => {
+  const colliding = () =>
+    analyseDiscovery(
+      discovery({
+        networks: [
+          { id: 'vpc-a', name: 'prod-vpc', region: 'eu-west-1', cidrs: ['10.20.0.0/16'] },
+          { id: 'vnet-b', name: 'corp-vnet', region: 'uksouth', cidrs: ['10.20.128.0/17'] },
+        ],
+      })
+    );
+
+  // The gap this closes: default networks and shared ranges each had a
+  // comment block, collisions had none. So someone running --emit-manifest
+  // never saw the human report, got a file listing both sides of a
+  // conflict, and first met it as a duplicate-CIDR rejection at apply.
+  it('warns in the file, since the human report is never printed on this path', () => {
+    const rendered = renderDiscoveryManifest(colliding());
+    expect(rendered).toContain('WARNING: 1 address collision found');
+    expect(rendered).toContain('corp-vnet');
+    expect(rendered).toContain('prod-vpc');
+    expect(rendered).toContain('32,768 addresses in common');
+  });
+
+  it('says what to do about it, not just that it happened', () => {
+    const rendered = renderDiscoveryManifest(colliding());
+    expect(rendered).toContain('Renumber one side');
+  });
+
+  it('stays quiet when nothing collides', () => {
+    const clean = analyseDiscovery(
+      discovery({
+        networks: [{ id: 'vpc-a', name: 'prod-vpc', region: 'eu-west-1', cidrs: ['10.20.0.0/16'] }],
+      })
+    );
+    expect(renderDiscoveryManifest(clean)).not.toContain('WARNING');
+  });
+
+  // A deliberate CGNAT overlap is not a conflict, so it must not raise this.
+  it('does not warn about overlaps that were deliberately suppressed', () => {
+    const shared = analyseDiscovery(
+      discovery({
+        networks: [
+          { id: 'vpc-a', name: 'eks-a', region: 'eu-west-1', cidrs: ['100.64.0.0/16'] },
+          { id: 'vpc-b', name: 'eks-b', region: 'us-east-1', cidrs: ['100.64.0.0/16'] },
+        ],
+      })
+    );
+    expect(renderDiscoveryManifest(shared)).not.toContain('WARNING');
+  });
+});
+
 describe('cloud-provisioned default networks', () => {
   const defaults = (n: number) =>
     Array.from({ length: n }, (_, i) => ({

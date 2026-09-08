@@ -712,9 +712,35 @@ export function renderDiscoveryManifest(report: ScanReport, options: ManifestOpt
     '# Apply with:  npx nxip-cli plan -f <this file>',
     '#        then: npx nxip-cli apply -f <this file>',
     '# Parents are created before their children, so this loads in one step.',
-    '',
-    'subnets:'
+    ''
   );
+
+  // Collisions were the one finding with no comment block, while default
+  // networks and shared ranges both had one. That gap mattered most to the
+  // person least likely to notice it: someone running scan --emit-manifest
+  // never sees the human report, so the conflict was detected, left out of
+  // the file, and never mentioned anywhere. They would meet it as a
+  // duplicate-CIDR rejection at apply, about a collision they were never
+  // told existed.
+  if (report.clusters.length > 0) {
+    const count = report.clusters.length;
+    lines.push(`# WARNING: ${count} address collision${count === 1 ? '' : 's'} found in what follows.`);
+    lines.push('#');
+    lines.push('# nxip refuses to record two networks owning the same addresses, so');
+    lines.push('# applying both sides of a conflict cannot succeed. Renumber one side');
+    lines.push('# first, or delete the entry you do not want and import the rest.');
+    lines.push('#');
+    for (const cluster of report.clusters) {
+      const members = cluster.members
+        .map((m) => `${m.name ?? m.networkId} (${m.region}) ${m.cidr}`)
+        .join('  vs  ');
+      lines.push(`#   ${members}`);
+      lines.push(`#     ${cluster.sharedAddresses.toLocaleString()} addresses in common`);
+    }
+    lines.push('');
+  }
+
+  lines.push('subnets:');
 
   for (const pool of pools) {
     const shared = sharedOf(pool);
