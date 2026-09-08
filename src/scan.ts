@@ -360,6 +360,38 @@ function networkNoun(report: ScanReport, plural = false): string {
   return plural ? 'networks' : 'network';
 }
 
+/**
+ * The one place a collision is turned into text. Both the human report and
+ * the emitted manifest render findings through this, because they had drifted
+ * into describing the same conflict two different ways: the manifest joined
+ * every member with "vs" (reading "A vs B vs C" for a three-network
+ * collision), and dropped both the identical-block case and the "at most"
+ * qualifier the report carries. Two renderers for one fact is two things to
+ * keep in step, and no way to notice when they stop agreeing.
+ */
+export function formatOverlapClusters(report: ScanReport, prefix = ''): string[] {
+  const lines: string[] = [];
+
+  for (const cluster of report.clusters) {
+    const cidrs = [...new Set(cluster.members.map((m) => m.cidr))];
+    lines.push(
+      cluster.identical
+        ? `${prefix}  ${cidrs[0]} claimed by ${cluster.members.length} ${networkNoun(report, true)}`
+        : `${prefix}  ${cidrs.join(' / ')} overlap across ${cluster.members.length} ${networkNoun(report, true)}`
+    );
+    for (const member of cluster.members) {
+      const cloud = member.provider ? `${member.provider.padEnd(6)} ` : '';
+      lines.push(
+        `${prefix}    ${cloud}${label(member.name, member.networkId).padEnd(34)} ${member.region.padEnd(14)} ${member.cidr}`
+      );
+    }
+    lines.push(`${prefix}    ${cluster.sharedAddresses.toLocaleString()} addresses in common at most`);
+    lines.push(prefix.trimEnd());
+  }
+
+  return lines;
+}
+
 export function formatScanReport(report: ScanReport): string {
   const lines: string[] = [];
   const { totals, discovery } = report;
@@ -425,20 +457,7 @@ export function formatScanReport(report: ScanReport): string {
     );
     lines.push('');
 
-    for (const cluster of report.clusters) {
-      const cidrs = [...new Set(cluster.members.map((m) => m.cidr))];
-      lines.push(
-        cluster.identical
-          ? `  ${cidrs[0]} claimed by ${cluster.members.length} ${networkNoun(report, true)}`
-          : `  ${cidrs.join(' / ')} overlap across ${cluster.members.length} ${networkNoun(report, true)}`
-      );
-      for (const member of cluster.members) {
-        const cloud = member.provider ? `${member.provider.padEnd(6)} ` : '';
-        lines.push(`    ${cloud}${label(member.name, member.networkId).padEnd(34)} ${member.region.padEnd(14)} ${member.cidr}`);
-      }
-      lines.push(`    ${cluster.sharedAddresses.toLocaleString()} addresses in common at most`);
-      lines.push('');
-    }
+    lines.push(...formatOverlapClusters(report));
     lines.push('  These cannot be peered or routed to each other without renumbering one side.');
     lines.push('');
   } else {
@@ -733,13 +752,8 @@ export function renderDiscoveryManifest(report: ScanReport, options: ManifestOpt
     lines.push('# applying both sides of a conflict cannot succeed. Renumber one side');
     lines.push('# first, or delete the entry you do not want and import the rest.');
     lines.push('#');
-    for (const cluster of report.clusters) {
-      const members = cluster.members
-        .map((m) => `${m.name ?? m.networkId} (${m.region}) ${m.cidr}`)
-        .join('  vs  ');
-      lines.push(`#   ${members}`);
-      lines.push(`#     ${cluster.sharedAddresses.toLocaleString()} addresses in common`);
-    }
+    lines.push(...formatOverlapClusters(report, '#'));
+    lines.push('# These cannot be peered or routed to each other without renumbering one side.');
     lines.push('');
   }
 

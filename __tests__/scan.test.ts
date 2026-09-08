@@ -192,6 +192,26 @@ describe('collisions in an emitted manifest', () => {
     expect(rendered).toContain('Renumber one side');
   });
 
+  // The terminal and the manifest had drifted into describing one finding
+  // two different ways. Two renderers for one fact is two things to keep in
+  // step, with no way to notice when they stop agreeing.
+  it('describes a collision identically in the report and the manifest', () => {
+    const report = colliding();
+    const interesting = (text: string) =>
+      text
+        .split('\n')
+        .filter((line) => /overlap|in common|renumbering|claimed by/.test(line))
+        .map((line) => line.replace(/^#/, '').trimEnd());
+
+    const fromReport = interesting(formatScanReport(report));
+    const fromManifest = interesting(renderDiscoveryManifest(report));
+
+    expect(fromReport.length).toBeGreaterThan(0);
+    for (const line of fromManifest) {
+      expect(fromReport.some((r) => r.trim() === line.trim())).toBe(true);
+    }
+  });
+
   // scan never contacts nxip, so it can only speak for what it discovered.
   // Claiming more than that is a clean bill of health it cannot give, and
   // the contradiction would arrive as a failed apply against a pool it
