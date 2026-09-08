@@ -724,7 +724,10 @@ export function renderDiscoveryManifest(report: ScanReport, options: ManifestOpt
   // told existed.
   if (report.clusters.length > 0) {
     const count = report.clusters.length;
-    lines.push(`# WARNING: ${count} address collision${count === 1 ? '' : 's'} found in what follows.`);
+    lines.push(`# WARNING: ${count} address collision${count === 1 ? '' : 's'} between the networks below.`);
+    lines.push('#');
+    lines.push('# These are conflicts within this scan. It has not been compared against');
+    lines.push('# what nxip already holds; `plan` does that, and can find more.');
     lines.push('#');
     lines.push('# nxip refuses to record two networks owning the same addresses, so');
     lines.push('# applying both sides of a conflict cannot succeed. Renumber one side');

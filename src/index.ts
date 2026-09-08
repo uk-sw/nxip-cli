@@ -377,14 +377,23 @@ async function main() {
         // wording jumped straight to offering an import that cannot fully
         // succeed while a conflict exists: nxip will not record two
         // networks owning the same addresses, so the second one is refused.
-        console.error('\nThese conflicts are in your cloud, not in nxip. Importing both sides');
+        console.error('\nThese conflicts are between the networks this scan discovered, and');
+        console.error('they exist in your cloud, not in nxip. Importing both sides');
         console.error('would ask nxip to record two networks owning the same addresses, which');
         console.error('it refuses by design. Renumber one side first, or import the rest and');
         console.error('leave the conflict out until it is resolved.');
       } else {
-        console.error('\nNothing overlaps today. Import it and nxip keeps it that way: every');
-        console.error('later allocation comes from a pool that cannot hand out a block already');
-        console.error('in use.');
+        // Deliberately scoped. This scan never contacts nxip: it compares the
+        // discovered networks against each other and nothing else. Saying
+        // "nothing overlaps" full stop would be a clean bill of health this
+        // command is not in a position to give, and the first contradiction
+        // would arrive as a failed apply against a pool it never saw.
+        console.error('\nNothing in this scan overlaps anything else in it.');
+        console.error('');
+        console.error('That is a comparison of the discovered networks against each other.');
+        console.error('It is not a check against what nxip already holds, which this command');
+        console.error('never contacts. `plan` does that, and is where a clash with an');
+        console.error('existing pool or subnet would show up.');
       }
 
       console.error('');

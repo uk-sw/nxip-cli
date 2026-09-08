@@ -181,7 +181,7 @@ describe('collisions in an emitted manifest', () => {
   // conflict, and first met it as a duplicate-CIDR rejection at apply.
   it('warns in the file, since the human report is never printed on this path', () => {
     const rendered = renderDiscoveryManifest(colliding());
-    expect(rendered).toContain('WARNING: 1 address collision found');
+    expect(rendered).toContain('WARNING: 1 address collision between the networks below');
     expect(rendered).toContain('corp-vnet');
     expect(rendered).toContain('prod-vpc');
     expect(rendered).toContain('32,768 addresses in common');
@@ -190,6 +190,16 @@ describe('collisions in an emitted manifest', () => {
   it('says what to do about it, not just that it happened', () => {
     const rendered = renderDiscoveryManifest(colliding());
     expect(rendered).toContain('Renumber one side');
+  });
+
+  // scan never contacts nxip, so it can only speak for what it discovered.
+  // Claiming more than that is a clean bill of health it cannot give, and
+  // the contradiction would arrive as a failed apply against a pool it
+  // never saw.
+  it('is explicit that this is a comparison within the scan only', () => {
+    const rendered = renderDiscoveryManifest(colliding());
+    expect(rendered).toContain('conflicts within this scan');
+    expect(rendered).toContain('not been compared against');
   });
 
   it('stays quiet when nothing collides', () => {
