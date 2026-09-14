@@ -883,31 +883,39 @@ describe('pool proposal (--emit-manifest)', () => {
     expect(pools.map((p) => p.cidr).sort()).toEqual(['10.0.0.0/16', '10.1.0.0/16', '10.2.0.0/16']);
   });
 
-  it('keeps environments unique where a region holds several networks', () => {
+  // Replaced 2026-09-14. These used to assert that several networks in one
+  // region had their environment rewritten to each network's name, to dodge
+  // the API's one-kind-tagged-subnet-per-key rule. That produced a manifest
+  // referencing pools that did not exist, because this runs offline and cannot
+  // know what pools there are. The rule was relaxed, so networks keep the
+  // default and import side by side.
+  it('keeps every network on the production default, even where a region holds several', () => {
     const pools = proposePools(analyseDiscovery(crowded));
     const euw2 = pools.filter((p) => p.region === 'eu-west-2');
     expect(euw2).toHaveLength(2);
-    // Same region, same family - so these must differ or the second collides.
-    expect(new Set(euw2.map((p) => p.environment)).size).toBe(2);
-    expect(euw2.every((p) => p.derivedEnvironment)).toBe(true);
+    expect(euw2.every((p) => p.environment === 'production')).toBe(true);
   });
 
   it('leaves a region with one network on the production default', () => {
     const pools = proposePools(analyseDiscovery(crowded));
     const solo = pools.find((p) => p.region === 'us-east-1')!;
     expect(solo.environment).toBe('production');
-    expect(solo.derivedEnvironment).toBe(false);
   });
 
-  it('produces no colliding (environment, region, family) key anywhere', () => {
-    // The property the whole design exists to guarantee. If this fails, the
-    // emitted file cannot be applied.
+  // The inverse of what this used to assert. Unique keys were once the
+  // property the design existed to guarantee, because two kind-tagged subnets
+  // could not share one. They now can, so a shared key is expected, and the
+  // environment the operator's pools actually use is the one emitted.
+  it('lets several networks share an (environment, region, family) key', () => {
     const pools = proposePools(analyseDiscovery(crowded));
     const keys = pools.map((p) => `${p.environment}|${p.region}|IPV4`);
-    expect(new Set(keys).size).toBe(keys.length);
+    expect(new Set(keys).size).toBeLessThan(keys.length);
   });
 
-  it('disambiguates networks that share a Name tag', () => {
+  // Names still have to be unique within the manifest, since children refer to
+  // their parent by name. That is a separate concern from environment and is
+  // unchanged.
+  it('still disambiguates the names of networks that share a Name tag', () => {
     const duplicated = discovery({
       networks: [
         { id: 'vpc-1', name: 'app', region: 'eu-west-2', cidrs: ['10.0.0.0/16'] },
@@ -915,7 +923,8 @@ describe('pool proposal (--emit-manifest)', () => {
       ],
     });
     const pools = proposePools(analyseDiscovery(duplicated));
-    expect(new Set(pools.map((p) => p.environment)).size).toBe(2);
+    expect(new Set(pools.map((p) => p.name)).size).toBe(2);
+    expect(pools.every((p) => p.environment === 'production')).toBe(true);
   });
 
   // A cloud network is not a pool: a pool is the block you carve space out
@@ -973,9 +982,9 @@ describe('pool proposal (--emit-manifest)', () => {
     expect(childrenOf(parseFullManifest(rendered).subnets)).toHaveLength(0);
   });
 
-  it('says why an environment was derived, so the guess is visible', () => {
-    expect(renderDiscoveryManifest(analyseDiscovery(crowded))).toContain('derived from network names');
-    const solo = discovery({ networks: [{ id: 'v', name: 'only', region: 'eu-west-2', cidrs: ['10.0.0.0/16'] }] });
-    expect(renderDiscoveryManifest(analyseDiscovery(solo))).not.toContain('derived from network names');
+  // The header used to explain derived environments. Nothing is derived now,
+  // so a note claiming otherwise would be describing behaviour that is gone.
+  it('no longer claims any environment was derived from a network name', () => {
+    expect(renderDiscoveryManifest(analyseDiscovery(crowded))).not.toContain('derived from network names');
   });
 });

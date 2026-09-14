@@ -90,7 +90,8 @@ export type PreviewFailureReason =
   | 'overlaps-existing'
   | 'tier-limit'
   | 'leaf-subnet-too-large'
-  | 'already-exists';
+  | 'already-exists'
+  | 'ambiguous-parent';
 
 export interface PreviewFailure {
   wouldSucceed: false;
