@@ -1,11 +1,11 @@
-import { createPool, createSubnet, listPools, NxipApiError, type NxipClientOptions } from './client.js';
+import { createPool, createSubnet, listPools, previewSubnet, NxipApiError, type NxipClientOptions } from './client.js';
 import { planManifest } from './plan.js';
 import type { Manifest, ManifestEntry, PoolEntry } from './manifest.js';
 
 export interface ApplyResult {
   name: string;
   kind: 'pool' | 'subnet';
-  outcome: 'created' | 'skipped' | 'failed';
+  outcome: 'created' | 'existing' | 'skipped' | 'failed';
   detail: string;
 }
 
@@ -129,8 +129,31 @@ export async function applyManifest(options: NxipClientOptions, entries: Manifes
         continue;
       }
       body = { ...body, parentSubnetId: parentId };
+
+      // Children are not previewed up front, because their parent may not
+      // exist until earlier in this same run. Once the parent is known it can
+      // be, and has to be: a re-import of a network with subnets inside it
+      // would otherwise mark the network as existing and then fail on every
+      // child with a 409, since each is already registered too.
+      if (body.cidr) {
+        const childPreview = await previewSubnet(options, body);
+        if (!childPreview.wouldSucceed && childPreview.reason === 'already-exists' && childPreview.existing) {
+          createdIds.set(entry.name, childPreview.existing.id);
+          results.push({ name: entry.name, kind: 'subnet', outcome: 'existing', detail: `${childPreview.existing.cidr} (id ${childPreview.existing.id})` });
+          continue;
+        }
+      }
     } else {
       const item = plannedByName.get(entry.name);
+      // Already registered: skip it, but record its id. A child declared under
+      // it in this manifest nests by looking its parent up in createdIds, and
+      // without this every subnet inside an already-imported network would be
+      // skipped as "parent was not created", even though the parent exists.
+      if (item && !item.result.wouldSucceed && item.result.reason === 'already-exists' && item.result.existing) {
+        createdIds.set(entry.name, item.result.existing.id);
+        results.push({ name: entry.name, kind: 'subnet', outcome: 'existing', detail: `${item.result.existing.cidr} (id ${item.result.existing.id})` });
+        continue;
+      }
       if (item && !item.result.wouldSucceed) {
         results.push({ name: entry.name, kind: 'subnet', outcome: 'skipped', detail: `${item.result.reason}: ${item.result.message}` });
         continue;
@@ -154,6 +177,7 @@ export async function applyManifest(options: NxipClientOptions, entries: Manifes
 export function formatApplyResults(results: ApplyResult[]): string {
   const lines: string[] = [];
   let created = 0;
+  let existing = 0;
 
   for (const result of results) {
     // Only pools are labelled: they are the new, less expected thing in a
@@ -163,6 +187,9 @@ export function formatApplyResults(results: ApplyResult[]): string {
     if (result.outcome === 'created') {
       created++;
       lines.push(`  + ${label}: created at ${result.detail}`);
+    } else if (result.outcome === 'existing') {
+      existing++;
+      lines.push(`  = ${label}: already exists at ${result.detail}`);
     } else if (result.outcome === 'skipped') {
       lines.push(`  x ${label}: skipped, ${result.detail}`);
     } else {
@@ -171,6 +198,9 @@ export function formatApplyResults(results: ApplyResult[]): string {
   }
 
   lines.push('');
-  lines.push(`Apply complete: ${created} created, ${results.length - created} not created.`);
+  // Existing entries are counted apart from failures: a re-run that finds
+  // everything already in place is a success, and should read as one.
+  const failed = results.length - created - existing;
+  lines.push(`Apply complete: ${created} created, ${existing} already existed, ${failed} not created.`);
   return lines.join('\n');
 }

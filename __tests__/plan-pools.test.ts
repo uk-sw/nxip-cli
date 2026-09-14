@@ -67,7 +67,7 @@ describe('formatAnnotatedPlan', () => {
   it('counts pending subnets as creatable, not failed', () => {
     const output = formatAnnotatedPlan(annotateAgainstPools([failingSubnet('no-pool')], [pool()]));
     expect(output).toContain('waiting on a pool declared in this manifest');
-    expect(output).toContain('Plan: 1 to create (1 after their pool), 0 blocked.');
+    expect(output).toContain('Plan: 1 to create (1 after their pool), 0 already exist, 0 blocked.');
     // The old wording was actively misleading here.
     expect(output).not.toContain('would fail');
   });

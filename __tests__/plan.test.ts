@@ -36,7 +36,7 @@ describe('formatPlan', () => {
     expect(output).toContain('payments will be created');
     expect(output).toContain('10.0.4.0/24');
     expect(output).toContain('pool "prod-us-east" (18% -> 24%)');
-    expect(output).toContain('Plan: 1 to create, 0 would fail.');
+    expect(output).toContain('Plan: 1 to create, 0 already exist, 0 would fail.');
     expect(output).toContain('not reserved');
   });
 
@@ -53,7 +53,7 @@ describe('formatPlan', () => {
     expect(output).toContain('overflow would fail');
     expect(output).toContain('reason:  full');
     expect(output).toContain('Pool is full');
-    expect(output).toContain('Plan: 0 to create, 1 would fail.');
+    expect(output).toContain('Plan: 0 to create, 0 already exist, 1 would fail.');
     expect(output).not.toContain('not reserved');
   });
 
@@ -88,7 +88,7 @@ describe('formatPlan', () => {
       },
     ];
 
-    expect(formatPlan(planned)).toContain('Plan: 1 to create, 1 would fail.');
+    expect(formatPlan(planned)).toContain('Plan: 1 to create, 0 already exist, 1 would fail.');
   });
 });
 

@@ -127,8 +127,20 @@ export function formatPlan(planned: PlannedSubnet[]): string {
   const lines: string[] = [];
   let toCreate = 0;
   let wouldFail = 0;
+  let existing = 0;
 
   for (const item of planned) {
+    // Already registered is not a failure, and reporting it as one made a
+    // re-plan after an import look broken: everything just created came back
+    // as "would fail". Mirrors how pools have always reported as existing.
+    if (!item.result.wouldSucceed && item.result.reason === 'already-exists') {
+      existing++;
+      lines.push(`  = ${item.name} already exists, no change`);
+      if (item.body.cidr) lines.push(`    cidr: ${item.body.cidr}`);
+      lines.push('');
+      continue;
+    }
+
     if (item.result.wouldSucceed) {
       toCreate++;
       const { subnet, container } = item.result;
@@ -159,7 +171,7 @@ export function formatPlan(planned: PlannedSubnet[]): string {
     }
   }
 
-  lines.push(`Plan: ${toCreate} to create, ${wouldFail} would fail.`);
+  lines.push(`Plan: ${toCreate} to create, ${existing} already exist, ${wouldFail} would fail.`);
   if (toCreate > 0) {
     lines.push('');
     lines.push(
@@ -239,6 +251,8 @@ export function formatPoolPlan(planned: PlannedPool[]): string {
 }
 
 export type SubnetBlocker =
+  /** Already registered. Not a blocker at all; apply skips it. */
+  | 'exists'
   /** Its pool is declared in this same manifest and will be created first. */
   | 'pending-pool'
   /** A different pool already holds this environment/region/family key. */
@@ -267,6 +281,7 @@ export interface AnnotatedSubnet {
 export function annotateAgainstPools(planned: PlannedSubnet[], pools: PlannedPool[]): AnnotatedSubnet[] {
   return planned.map((item) => {
     if (item.result.wouldSucceed) return { planned: item, blocker: 'real' as const };
+    if (item.result.reason === 'already-exists') return { planned: item, blocker: 'exists' as const };
 
     const reason = item.result.reason;
     if (reason !== 'no-pool' && reason !== 'outside-pool') {
@@ -307,10 +322,17 @@ export function formatAnnotatedPlan(annotated: AnnotatedSubnet[]): string {
   let willCreate = 0;
   let pending = 0;
   let blocked = 0;
+  let existing = 0;
 
   for (const item of annotated) {
     if (item.planned.result.wouldSucceed) {
       willCreate++;
+      continue;
+    }
+    if (item.blocker === 'exists') {
+      existing++;
+      lines.push(`  = ${item.planned.name} already exists, no change`);
+      lines.push('');
       continue;
     }
     if (item.blocker === 'pending-pool') {
@@ -339,7 +361,7 @@ export function formatAnnotatedPlan(annotated: AnnotatedSubnet[]): string {
   }
 
   lines.push(
-    `Plan: ${willCreate + pending} to create (${pending} after their pool), ${blocked} blocked.`
+    `Plan: ${willCreate + pending} to create (${pending} after their pool), ${existing} already exist, ${blocked} blocked.`
   );
   return lines.join('\n');
 }

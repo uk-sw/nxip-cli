@@ -89,13 +89,20 @@ export type PreviewFailureReason =
   | 'outside-pool'
   | 'overlaps-existing'
   | 'tier-limit'
-  | 'leaf-subnet-too-large';
+  | 'leaf-subnet-too-large'
+  | 'already-exists';
 
 export interface PreviewFailure {
   wouldSucceed: false;
   reason: PreviewFailureReason;
   message: string;
   httpStatusIfAttempted: number;
+  /**
+   * Present only for already-exists. Carries the existing subnet's id because
+   * a child declared in the same manifest has to nest under it, even though it
+   * was not created in this run.
+   */
+  existing?: { id: string; cidr: string; name: string | null };
   tierLimit?: {
     metric: TierLimitMetric;
     tier: OrgTier;
