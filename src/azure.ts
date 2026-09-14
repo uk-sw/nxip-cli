@@ -78,6 +78,10 @@ export async function discoverAzure(options: {
 
         networks.push({
           id: networkId,
+          // networkId above is readable but not unique: resourceGroup/name
+          // repeats across subscriptions and survives a delete and recreate.
+          // resourceGuid does neither, so it is the real identity.
+          uid: vnet.resourceGuid ?? null,
           name: vnet.name ?? null,
           region,
           // Unlike GCP, an Azure VNet does carry its own address space, so

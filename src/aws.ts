@@ -100,6 +100,9 @@ export async function discoverAws(options: {
             .filter((c): c is string => Boolean(c));
           networks.push({
             id: vpc.VpcId,
+            // A VPC id is already unique across accounts and changes if the
+            // VPC is recreated, so it doubles as the unique id.
+            uid: vpc.VpcId ?? null,
             name: nameTag(vpc.Tags),
             region,
             cidrs: cidrs.length > 0 ? cidrs : vpc.CidrBlock ? [vpc.CidrBlock] : [],

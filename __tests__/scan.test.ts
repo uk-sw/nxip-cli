@@ -988,3 +988,34 @@ describe('pool proposal (--emit-manifest)', () => {
     expect(renderDiscoveryManifest(analyseDiscovery(crowded))).not.toContain('derived from network names');
   });
 });
+
+describe('a network\'s unique id in an emitted manifest', () => {
+  // Azure's readable id, resourceGroup/name, repeats across subscriptions
+  // and survives a delete and recreate. The GUID does neither, so it is what
+  // lets a later comparison tell a re-imported network from a stranger that
+  // reused its name.
+  const guid = '5f1e7c2a-3b9d-4e8f-a012-7c6d5e4f3a21';
+  const vnet = (uid?: string | null) =>
+    discovery({
+      provider: 'azure',
+      account: '8f2a1c44-9b3e-4d7a-b512-6e0f9a3c1d88',
+      regions: ['uksouth'],
+      networks: [{ id: 'rg-hub/vnet-hub', uid, name: 'vnet-hub', region: 'uksouth', cidrs: ['10.40.0.0/16'] }],
+    });
+
+  it('records it beside the readable id', () => {
+    const rendered = renderDiscoveryManifest(analyseDiscovery(vnet(guid)));
+    expect(rendered).toContain('network_id: "rg-hub/vnet-hub"');
+    expect(rendered).toContain(`network_uid: "${guid}"`);
+  });
+
+  it('survives a round trip through the manifest parser', () => {
+    const parsed = parseFullManifest(renderDiscoveryManifest(analyseDiscovery(vnet(guid))));
+    expect(parsed.subnets[0].body.metadata?.network_uid).toBe(guid);
+  });
+
+  it('omits the key rather than writing an empty one when there is no id', () => {
+    expect(renderDiscoveryManifest(analyseDiscovery(vnet(null)))).not.toContain('network_uid');
+    expect(renderDiscoveryManifest(analyseDiscovery(vnet(undefined)))).not.toContain('network_uid');
+  });
+});

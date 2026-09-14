@@ -9,6 +9,21 @@ export type CloudProvider = 'aws' | 'azure';
 export interface DiscoveredNetwork {
   /** Provider's own id, e.g. vpc-0a1b2c3d, or resourceGroup/vnet-name. */
   id: string;
+  /**
+   * An identifier unique to this one network, everywhere and for ever.
+   *
+   * `id` is chosen to be readable, and on Azure that makes it not unique:
+   * `resourceGroup/vnet-name` repeats across subscriptions, and a VNet deleted
+   * and recreated under the same name gets the same one. Azure's own
+   * resourceGuid is unique across subscriptions and changes on recreation,
+   * which is how an AWS VPC id already behaves, so on AWS this is the VPC id.
+   *
+   * Recorded so drift detection can one day tell a re-imported network from a
+   * different network that reused its name or block. It identifies a network,
+   * never its address space: two networks with different ids can still
+   * overlap.
+   */
+  uid?: string | null;
   name: string | null;
   region: string;
   cidrs: string[];
@@ -555,6 +570,7 @@ interface ProposedPool {
   environment: string;
   region: string;
   networkId: string;
+  networkUid?: string | null;
   provider?: CloudProvider;
   account?: string | null;
   range: Ipv4Range;
@@ -608,6 +624,7 @@ export function proposePools(report: ScanReport, options: ProposePoolsOptions = 
         environment: 'production',
         region: network.region,
         networkId: network.id,
+        networkUid: network.uid ?? null,
         provider: network.provider,
         account: network.account,
         range,
@@ -796,6 +813,9 @@ export function renderDiscoveryManifest(report: ScanReport, options: ManifestOpt
     entry.push(`    metadata:`);
     entry.push(`      source: ${JSON.stringify(`${pool.provider ?? 'cloud'}-scan`)}`);
     entry.push(`      network_id: ${JSON.stringify(pool.networkId)}`);
+    // Uniform key across clouds, so anything matching on it later needs no
+    // provider branch. Omitted when the source could not supply one.
+    if (pool.networkUid) entry.push(`      network_uid: ${JSON.stringify(pool.networkUid)}`);
     if (pool.account) entry.push(`      account: ${JSON.stringify(pool.account)}`);
 
     lines.push(...(lost ? entry.map((line) => `# ${line}`) : entry));
@@ -1003,6 +1023,11 @@ export function redactDiscovery(discovery: MergedDiscovery): MergedDiscovery {
       // Dropped rather than pseudonymised: the id already carries a stable
       // label, and a second one adds nothing but noise.
       name: null,
+      // Dropped too, and explicitly: this object is built by spreading the
+      // original, so a field not named here passes through unredacted. A
+      // unique network id is exactly what --redact exists to hide, and a
+      // pseudonym for it would serve no purpose in a shared report.
+      uid: null,
       account: accountFor(network.provider, network.account),
     })),
     subnets: discovery.subnets.map((subnet) => ({

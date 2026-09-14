@@ -12,13 +12,15 @@ import {
 // subscription GUID, and names carrying a customer's identity.
 const AWS_ACCOUNT = '123456789012';
 const AZURE_SUB = '8f2a1c44-9b3e-4d7a-b512-6e0f9a3c1d88';
-const SECRETS = [AWS_ACCOUNT, AZURE_SUB, 'acme-prod-payments', 'vpc-0aa1', 'rg-acme-hub', 'acme-hub', 'acme-prod-db'];
+// The VNet GUID is the most identifying of all: unique to one network, ever.
+const VNET_GUID = '5f1e7c2a-3b9d-4e8f-a012-7c6d5e4f3a21';
+const SECRETS = [AWS_ACCOUNT, AZURE_SUB, VNET_GUID, 'acme-prod-payments', 'vpc-0aa1', 'rg-acme-hub', 'acme-hub', 'acme-prod-db'];
 
 const aws: Discovery = {
   provider: 'aws',
   account: AWS_ACCOUNT,
   regions: ['eu-west-2'],
-  networks: [{ id: 'vpc-0aa1', name: 'acme-prod-payments', region: 'eu-west-2', cidrs: ['10.0.0.0/16'] }],
+  networks: [{ id: 'vpc-0aa1', uid: 'vpc-0aa1', name: 'acme-prod-payments', region: 'eu-west-2', cidrs: ['10.0.0.0/16'] }],
   subnets: [{ id: 'subnet-a', name: 'acme-prod-db', networkId: 'vpc-0aa1', region: 'eu-west-2', cidr: '10.0.1.0/24' }],
 };
 
@@ -26,7 +28,7 @@ const azure: Discovery = {
   provider: 'azure',
   account: AZURE_SUB,
   regions: ['uksouth'],
-  networks: [{ id: 'rg-acme-hub/vnet-hub', name: 'acme-hub', region: 'uksouth', cidrs: ['10.0.0.0/16'] }],
+  networks: [{ id: 'rg-acme-hub/vnet-hub', uid: VNET_GUID, name: 'acme-hub', region: 'uksouth', cidrs: ['10.0.0.0/16'] }],
   subnets: [
     { id: 'rg-acme-hub/vnet-hub/default', name: 'acme-default', networkId: 'rg-acme-hub/vnet-hub', region: 'uksouth', cidr: '10.0.2.0/24' },
   ],
