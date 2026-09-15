@@ -1016,6 +1016,15 @@ describe('a network\'s unique id in an emitted manifest', () => {
     expect(parsed.subnets[0].body.metadata?.network_uid).toBe(guid);
   });
 
+  it('omits the key when it would only repeat network_id, as on AWS', () => {
+    const vpc = discovery({
+      networks: [{ id: 'vpc-962f3fff', uid: 'vpc-962f3fff', name: 'app', region: 'eu-west-2', cidrs: ['10.9.0.0/16'] }],
+    });
+    const rendered = renderDiscoveryManifest(analyseDiscovery(vpc));
+    expect(rendered).toContain('network_id: "vpc-962f3fff"');
+    expect(rendered).not.toContain('network_uid');
+  });
+
   it('omits the key rather than writing an empty one when there is no id', () => {
     expect(renderDiscoveryManifest(analyseDiscovery(vnet(null)))).not.toContain('network_uid');
     expect(renderDiscoveryManifest(analyseDiscovery(vnet(undefined)))).not.toContain('network_uid');

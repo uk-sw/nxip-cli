@@ -829,9 +829,12 @@ export function renderDiscoveryManifest(report: ScanReport, options: ManifestOpt
     entry.push(`    metadata:`);
     entry.push(`      source: ${JSON.stringify(`${pool.provider ?? 'cloud'}-scan`)}`);
     entry.push(`      network_id: ${JSON.stringify(pool.networkId)}`);
-    // Uniform key across clouds, so anything matching on it later needs no
-    // provider branch. Omitted when the source could not supply one.
-    if (pool.networkUid) entry.push(`      network_uid: ${JSON.stringify(pool.networkUid)}`);
+    // Only when it says something network_id does not. On AWS the VPC id is
+    // already unique, so repeating it read as a duplication bug. Anything
+    // matching on identity later reads `network_uid ?? network_id`.
+    if (pool.networkUid && pool.networkUid !== pool.networkId) {
+      entry.push(`      network_uid: ${JSON.stringify(pool.networkUid)}`);
+    }
     if (pool.account) entry.push(`      account: ${JSON.stringify(pool.account)}`);
 
     lines.push(...(lost ? entry.map((line) => `# ${line}`) : entry));
