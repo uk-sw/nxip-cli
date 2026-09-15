@@ -1,8 +1,32 @@
-import type { NxipPool, NxipPoolBody, NxipSubnetBody, PreviewResult } from './types.js';
+import type {
+  AddressStatus,
+  AddressFamily,
+  ApiPage,
+  NxipAddress,
+  NxipAddressBody,
+  NxipCreatedSubnet,
+  NxipLookupResult,
+  NxipPool,
+  NxipPoolBody,
+  NxipPoolDetail,
+  NxipPoolForecast,
+  NxipSearchResult,
+  NxipSubnet,
+  NxipSubnetBody,
+  NxipUsage,
+  PreviewResult,
+} from './types.js';
 
 export interface NxipClientOptions {
   apiKey: string;
   baseUrl: string;
+  /**
+   * Abort a request that has not answered within this many milliseconds.
+   * Unset means no limit, which is what plan and apply have always had. The
+   * MCP server sets one: an agent waiting on a hung request has no Ctrl+C,
+   * so a stalled network should come back as an error it can report.
+   */
+  timeoutMs?: number;
 }
 
 // x-api-key, not Authorization: Bearer. client.go in terraform-provider-nxip
@@ -42,6 +66,7 @@ async function request<T>(
       [API_KEY_HEADER]: options.apiKey,
     },
     body: method === 'GET' ? undefined : JSON.stringify(body),
+    signal: options.timeoutMs ? AbortSignal.timeout(options.timeoutMs) : undefined,
   });
 
   const text = await response.text();
@@ -74,7 +99,7 @@ export function previewSubnet(options: NxipClientOptions, body: NxipSubnetBody):
 }
 
 /** Calls the real POST /v1/subnets - only ever invoked after a preview came back wouldSucceed: true. */
-export function createSubnet(options: NxipClientOptions, body: NxipSubnetBody): Promise<{ id: string; cidr: string }> {
+export function createSubnet(options: NxipClientOptions, body: NxipSubnetBody): Promise<NxipCreatedSubnet> {
   return request(options, '/v1/subnets', body);
 }
 
@@ -124,4 +149,97 @@ export async function listPools(options: NxipClientOptions): Promise<NxipPool[]>
     `This organization has more than ${MAX_POOL_PAGES * 100} pools, which nxip cannot read in one plan. ` +
       'Please open an issue: this limit is arbitrary and can be raised.'
   );
+}
+
+/**
+ * Encodes a client-supplied id for use as one path segment. Without this an
+ * id of `x/../../organizations/usage` would address a different route than
+ * the one the caller asked for. The API would still authorise whatever it
+ * reached, but a tool must only ever call the endpoint it names.
+ */
+function segment(id: string): string {
+  return encodeURIComponent(id);
+}
+
+/** Appends only the query parameters actually given, so an absent filter is never sent as `?region=undefined`. */
+function withQuery(path: string, query: Record<string, string | number | undefined>): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined) params.set(key, String(value));
+  }
+  const encoded = params.toString();
+  return encoded ? `${path}?${encoded}` : path;
+}
+
+// The helpers below each call exactly one endpoint and return its body
+// untouched. Unlike listPools above, they read one page at a time: paging is
+// left to the caller, who can see meta.totalPages and ask for the next one.
+
+export interface PageQuery {
+  page?: number;
+  limit?: number;
+}
+
+/**
+ * GET /v1/pools, one page. `family` is deliberately not offered: the route's
+ * query schema accepts it, but the handler never applies it, so passing it
+ * would look like a filter while returning every family.
+ */
+export function listPoolsPage(
+  options: NxipClientOptions,
+  query: PageQuery & { environment?: string; region?: string } = {}
+): Promise<ApiPage<NxipPoolDetail>> {
+  return request(options, withQuery('/v1/pools', { ...query }), undefined, 'GET');
+}
+
+/** GET /v1/pools/:id */
+export function getPool(options: NxipClientOptions, id: string): Promise<NxipPoolDetail> {
+  return request(options, `/v1/pools/${segment(id)}`, undefined, 'GET');
+}
+
+/** GET /v1/pools/forecast */
+export function forecastPools(options: NxipClientOptions): Promise<NxipPoolForecast> {
+  return request(options, '/v1/pools/forecast', undefined, 'GET');
+}
+
+/** GET /v1/subnets, one page. */
+export function listSubnets(
+  options: NxipClientOptions,
+  query: PageQuery & { environment?: string; region?: string; family?: AddressFamily } = {}
+): Promise<ApiPage<NxipSubnet>> {
+  return request(options, withQuery('/v1/subnets', { ...query }), undefined, 'GET');
+}
+
+/** GET /v1/subnets/:id */
+export function getSubnet(options: NxipClientOptions, id: string): Promise<NxipSubnet> {
+  return request(options, `/v1/subnets/${segment(id)}`, undefined, 'GET');
+}
+
+/** GET /v1/subnets/:id/addresses, one page. */
+export function listAddresses(
+  options: NxipClientOptions,
+  subnetId: string,
+  query: PageQuery & { status?: AddressStatus } = {}
+): Promise<ApiPage<NxipAddress>> {
+  return request(options, withQuery(`/v1/subnets/${segment(subnetId)}/addresses`, { ...query }), undefined, 'GET');
+}
+
+/** POST /v1/subnets/:id/addresses. Registers the address given; the API never picks one. */
+export function createAddress(options: NxipClientOptions, subnetId: string, body: NxipAddressBody): Promise<NxipAddress> {
+  return request(options, `/v1/subnets/${segment(subnetId)}/addresses`, body);
+}
+
+/** GET /v1/lookup */
+export function lookupIp(options: NxipClientOptions, ip: string): Promise<NxipLookupResult> {
+  return request(options, withQuery('/v1/lookup', { ip }), undefined, 'GET');
+}
+
+/** GET /v1/search */
+export function search(options: NxipClientOptions, q: string, limit?: number): Promise<NxipSearchResult> {
+  return request(options, withQuery('/v1/search', { q, limit }), undefined, 'GET');
+}
+
+/** GET /v1/organizations/usage */
+export function getUsage(options: NxipClientOptions): Promise<NxipUsage> {
+  return request(options, '/v1/organizations/usage', undefined, 'GET');
 }

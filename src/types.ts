@@ -120,3 +120,133 @@ export interface PlannedSubnet {
   body: NxipSubnetBody;
   result: PreviewResult;
 }
+
+// Response shapes for the read endpoints the MCP server exposes. Each mirrors
+// its route's Zod response schema in net-saas-monorepo/apps/api/src/routes,
+// named in the comment above it, field for field. The MCP tools pass these
+// bodies through untouched; the types exist so the one-line summaries read
+// real fields rather than guessed ones.
+
+// meta block shared by every paginated list route (pools, subnets, addresses).
+export interface ApiPage<T> {
+  data: T[];
+  meta: { total: number; page: number; limit: number; totalPages: number };
+}
+
+// pools.ts poolWithUtilizationSchema.
+export interface NxipPoolDetail {
+  id: string;
+  organizationId: string;
+  name: string;
+  cidr: string;
+  family: AddressFamily;
+  environment: string;
+  region: string;
+  metadata: Record<string, string>;
+  createdAt: string;
+  updatedAt: string;
+  utilization: ContainerUtilization;
+}
+
+// pools.ts getPoolForecastSchema.
+export interface NxipPoolForecast {
+  data: {
+    poolId: string;
+    poolName: string;
+    runwayDays: number | null;
+    exhaustsOn: string | null;
+    burnPerDay: number | null;
+    allocations: number;
+    observedDays: number;
+    freeAddresses: number | null;
+    reason: 'not_measurable' | 'insufficient_history' | 'no_burn' | null;
+  }[];
+  meta: { windowDays: number; minAllocations: number; minSpanDays: number };
+}
+
+// subnets.ts createSubnetSchema 201 response.
+export interface NxipCreatedSubnet {
+  id: string;
+  cidr: string;
+  prefixLength: number;
+  family: AddressFamily;
+  environment: string;
+  region: string;
+  ipPoolId: string;
+  parentSubnetId: string | null;
+  kind: string | null;
+  name: string | null;
+  description: string | null;
+  metadata: Record<string, string>;
+  createdAt: string;
+}
+
+// subnets.ts getSubnetByIdSchema, and each item of getSubnetsSchema.
+export interface NxipSubnet extends NxipCreatedSubnet {
+  updatedAt?: string;
+  utilization: { registeredAddresses: number; capacity?: number; percentageUsed?: number };
+}
+
+export type AddressStatus = 'ACTIVE' | 'RESERVED';
+
+// addresses.ts createAddressSchema body.
+export interface NxipAddressBody {
+  address: string;
+  status?: AddressStatus;
+  hostname?: string;
+  metadata?: Record<string, string>;
+}
+
+// addresses.ts addressResponse.
+export interface NxipAddress {
+  id: string;
+  subnetId: string;
+  address: string;
+  family: AddressFamily;
+  status: AddressStatus;
+  hostname: string | null;
+  metadata: Record<string, string>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// lookup.ts lookupSchema 200 response.
+export interface NxipLookupResult {
+  ip: string;
+  family: AddressFamily;
+  matchType: 'address' | 'subnet' | 'pool';
+  address?: { id: string; address: string; status: AddressStatus; hostname: string | null; subnetId: string };
+  subnet?: { id: string; cidr: string; prefixLength: number; environment: string; region: string; ipPoolId: string };
+  pool: { id: string; name: string; cidr: string; environment: string; region: string };
+}
+
+// search.ts searchSchema 200 response.
+export interface NxipSearchResult {
+  query: string;
+  pools: { id: string; name: string; cidr: string; environment: string; region: string }[];
+  subnets: { id: string; name: string | null; cidr: string; environment: string; region: string; ipPoolId: string }[];
+  addresses: { id: string; address: string; hostname: string | null; status: AddressStatus; subnetId: string }[];
+  truncated: boolean;
+}
+
+// organizations.ts metricUsageSchema and getUsageSchema.
+export interface NxipMetricUsage {
+  current: number;
+  limit: number | null;
+  percentageUsed: number;
+  isUnlimited: boolean;
+  isOverLimit: boolean;
+}
+
+export interface NxipUsage {
+  organizationId: string;
+  tier: OrgTier;
+  rateLimitRpm: number;
+  metrics: {
+    pools: NxipMetricUsage;
+    subnets: NxipMetricUsage;
+    ipv4Addresses: NxipMetricUsage;
+    addressRecords: NxipMetricUsage;
+    seats: NxipMetricUsage;
+  };
+}

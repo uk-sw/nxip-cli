@@ -52,6 +52,7 @@
     "@azure/arm-network": "^38.0.0",
     "@azure/arm-resources-subscriptions": "^3.0.0",
     "@azure/identity": "^4.13.2",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "yaml": "^2.6.1",
     "zod": "^4.4.3"
   },
