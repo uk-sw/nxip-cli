@@ -11,6 +11,7 @@ import { discoverAws, AwsScanError } from './aws.js';
 import { discoverAzure, AzureScanError } from './azure.js';
 import { analyseDiscovery, formatScanReport, renderDiscoveryManifest, mergeDiscoveries, redactDiscovery, type Discovery } from './scan.js';
 import { DEFAULT_SHARED_RANGES, parseSharedRanges, SharedRangeError } from './shared-ranges.js';
+import { runMcpServer } from './mcp.js';
 
 interface ParsedArgs {
   command: string;
@@ -33,6 +34,7 @@ interface ParsedArgs {
   subscriptions?: string[];
   allSubscriptions: boolean;
   failOnOverlap: boolean;
+  readOnly: boolean;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -49,6 +51,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     providers: [],
     allSubscriptions: false,
     failOnOverlap: false,
+    readOnly: false,
   };
 
   // `scan` takes one or more providers as leading positionals, so
@@ -95,6 +98,8 @@ function parseArgs(argv: string[]): ParsedArgs {
       args.allSubscriptions = true;
     } else if (arg === '--fail-on-overlap') {
       args.failOnOverlap = true;
+    } else if (arg === '--read-only') {
+      args.readOnly = true;
     }
   }
 
@@ -141,6 +146,7 @@ function printUsage(stream: 'out' | 'err' = 'err') {
   write('         azure: [--subscription ID,...]');
   write(`       ${CLI} scaffold -f <site.yaml> [-o <manifest.yaml>]`);
   write(`       ${CLI} <plan|apply> -f <manifest.yaml> [--api-key KEY] [--url URL] [--auto-approve]`);
+  write(`       ${CLI} mcp [--read-only]   MCP server on stdio, for AI agents (needs NXIP_API_KEY)`);
   write('');
   write('Both providers scan everything by default: every AWS region, every Azure');
   write('subscription the identity can see. Narrow with --region or --subscription.');
@@ -149,7 +155,7 @@ function printUsage(stream: 'out' | 'err' = 'err') {
   write('this machine. It never contacts nxip. To compare against what your nxip');
   write(`organization already holds, use \`${CLI} plan -f <manifest.yaml>\` instead.`);
   write('');
-  write('scan and scaffold need no nxip account. plan and apply need an API key.');
+  write('scan and scaffold need no nxip account. plan, apply and mcp need an API key.');
   write('Docs: https://nx-ip.com/docs/nxip-cli');
 }
 
@@ -174,7 +180,7 @@ async function listPoolsQuietly(options: Parameters<typeof listPools>[0]) {
   }
 }
 
-const COMMANDS = new Set(['scan', 'scaffold', 'plan', 'apply']);
+const COMMANDS = new Set(['scan', 'scaffold', 'plan', 'apply', 'mcp']);
 
 
 async function main() {
@@ -409,6 +415,14 @@ async function main() {
   if (!options.apiKey) {
     console.error('Missing API key. Set NXIP_API_KEY, or pass --api-key. Get one free at https://nx-ip.com/signup.');
     process.exitCode = 1;
+    return;
+  }
+
+  // After the API-key gate on purpose: a server that started without a key
+  // would look healthy to the client and then fail every tool call. Exiting
+  // here puts the one line saying what to set in the client's server log.
+  if (args.command === 'mcp') {
+    await runMcpServer(options, { readOnly: args.readOnly });
     return;
   }
 
