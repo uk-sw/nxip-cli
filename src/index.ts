@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { readFileSync, writeFileSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
-import { resolveClientOptions, listPools } from './client.js';
+import { resolveClientOptions, resolveTargetLine, listPools } from './client.js';
 import { ManifestError, parseFullManifest, type Manifest } from './manifest.js';
 import { formatPlan, planManifest, planPools, formatPoolPlan, annotateAgainstPools, formatAnnotatedPlan, formatNestedEntries, findCrossPoolOverlaps, formatCrossPoolOverlaps } from './plan.js';
 import { applyFullManifest, formatApplyResults } from './apply.js';
@@ -20,6 +20,7 @@ interface ParsedArgs {
   output?: string;
   apiKey?: string;
   url?: string;
+  organization?: string;
   autoApprove: boolean;
   regions?: string[];
   allRegions: boolean;
@@ -72,6 +73,8 @@ function parseArgs(argv: string[]): ParsedArgs {
       args.apiKey = rest[++i];
     } else if (arg === '--url') {
       args.url = rest[++i];
+    } else if (arg === '--organization') {
+      args.organization = rest[++i];
     } else if (arg === '--auto-approve') {
       args.autoApprove = true;
     } else if (arg === '--region') {
@@ -145,8 +148,11 @@ function printUsage(stream: 'out' | 'err' = 'err') {
   write('         aws:   [--region NAME,...] [--profile NAME]');
   write('         azure: [--subscription ID,...]');
   write(`       ${CLI} scaffold -f <site.yaml> [-o <manifest.yaml>]`);
-  write(`       ${CLI} <plan|apply> -f <manifest.yaml> [--api-key KEY] [--url URL] [--auto-approve]`);
-  write(`       ${CLI} mcp [--read-only]   MCP server on stdio, for AI agents (needs NXIP_API_KEY)`);
+  write(`       ${CLI} <plan|apply> -f <manifest.yaml> [--api-key KEY] [--url URL] [--organization ID] [--auto-approve]`);
+  write(`       ${CLI} mcp [--read-only] [--organization ID]   MCP server on stdio, for AI agents (needs NXIP_API_KEY)`);
+  write('');
+  write('--organization ID (or NXIP_ORGANIZATION) manages a customer organization instead');
+  write('of the API key\'s own. Unset means the key\'s own organization, as before.');
   write('');
   write('Both providers scan everything by default: every AWS region, every Azure');
   write('subscription the identity can see. Narrow with --region or --subscription.');
@@ -422,7 +428,7 @@ async function main() {
     }
   }
 
-  const options = resolveClientOptions(args.apiKey, args.url);
+  const options = resolveClientOptions(args.apiKey, args.url, args.organization);
 
   if (!options.apiKey) {
     console.error('Missing API key. Set NXIP_API_KEY, or pass --api-key. Get one free at https://nx-ip.com/signup.');
@@ -443,6 +449,12 @@ async function main() {
   }
 
   if (args.command === 'plan') {
+    // First line of output, before anything else, including a missing
+    // manifest: see docs/specs/msp-tenancy-phase2.md Part C. Advisory only -
+    // resolveTargetLine never throws, so this can never block a plan.
+    const targetLine = await resolveTargetLine(options);
+    if (targetLine) console.log(targetLine);
+
     const manifest = loadManifest(args.file);
     if (!manifest) return;
     const poolPlan = await planPools(options, manifest.pools);
@@ -457,6 +469,12 @@ async function main() {
   }
 
   if (args.command === 'apply') {
+    // Same rule as plan above, printed regardless of --auto-approve so it is
+    // always the first thing an apply prints, not just the first thing an
+    // interactive one prints before the confirmation prompt.
+    const targetLine = await resolveTargetLine(options);
+    if (targetLine) console.log(targetLine);
+
     const manifest = loadManifest(args.file);
     if (!manifest) return;
 
