@@ -373,6 +373,57 @@ Plan: 1 to create, 0 would fail.
 Terraform), then creates whatever the plan predicted would succeed. Pass
 `--auto-approve` to skip the prompt, e.g. in CI.
 
+### Managing a customer organization (`--organization`)
+
+If your nxip organization is a provider managing customers (see
+[Customer organizations](https://nx-ip.com/docs/customer-organizations)),
+`plan`, `apply` and `mcp` all take `--organization <id>`, or the
+`NXIP_ORGANIZATION` environment variable, to act on a customer instead of
+your own organization. A flag always wins over the environment variable.
+
+```bash
+nxip plan -f subnets.yaml --organization org_abc123
+# or
+export NXIP_ORGANIZATION=org_abc123
+nxip plan -f subnets.yaml
+```
+
+**Leaving it unset means your own organization**, exactly as before this
+flag existed. Nothing changes for anyone without customers.
+
+`plan` and `apply` print which organization they are targeting as the first
+line of output, so a manifest never lands somewhere unintended:
+
+```
+Target: customer organization org_abc123
+```
+
+If you manage customers and forget to set it, they say so instead of
+silently acting on your own organization:
+
+```
+Target: your own organization. Pass --organization to manage a customer.
+```
+
+For `mcp`, the organization is fixed for the life of the server process,
+not something a tool argument can change, so an agent talking to it cannot
+switch customers on its own. The same target line is printed to stderr,
+alongside the server's usual startup diagnostic:
+
+```json
+{
+  "mcpServers": {
+    "nxip-acme": {
+      "command": "npx",
+      "args": ["-y", "nxip-cli", "mcp", "--organization", "org_abc123"],
+      "env": {
+        "NXIP_API_KEY": "<your key>"
+      }
+    }
+  }
+}
+```
+
 ## Scaffolding a new site (`nxip scaffold`)
 
 For standing up a new site or landing zone across multiple clouds at
