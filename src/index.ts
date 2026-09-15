@@ -11,7 +11,7 @@ import { discoverAws, AwsScanError } from './aws.js';
 import { discoverAzure, AzureScanError } from './azure.js';
 import { analyseDiscovery, formatScanReport, renderDiscoveryManifest, mergeDiscoveries, redactDiscovery, type Discovery } from './scan.js';
 import { DEFAULT_SHARED_RANGES, parseSharedRanges, SharedRangeError } from './shared-ranges.js';
-import { runMcpServer } from './mcp.js';
+import { findUnknownMcpArgument } from './mcp-args.js';
 
 interface ParsedArgs {
   command: string;
@@ -410,6 +410,18 @@ async function main() {
     return;
   }
 
+  // Before the API-key gate, so a typo is reported as a typo rather than
+  // hidden behind "missing API key". mcp only: every other command keeps
+  // its existing, lenient flag handling.
+  if (args.command === 'mcp') {
+    const unknown = findUnknownMcpArgument(process.argv.slice(3));
+    if (unknown) {
+      console.error(unknown);
+      process.exitCode = 1;
+      return;
+    }
+  }
+
   const options = resolveClientOptions(args.apiKey, args.url);
 
   if (!options.apiKey) {
@@ -422,6 +434,10 @@ async function main() {
   // would look healthy to the client and then fail every tool call. Exiting
   // here puts the one line saying what to set in the client's server log.
   if (args.command === 'mcp') {
+    // Loaded here rather than at the top of the file: the MCP SDK is a
+    // sizeable import tree, and scan, plan, apply and --version have no use
+    // for it. A static import made every one of them slower to start.
+    const { runMcpServer } = await import('./mcp.js');
     await runMcpServer(options, { readOnly: args.readOnly });
     return;
   }

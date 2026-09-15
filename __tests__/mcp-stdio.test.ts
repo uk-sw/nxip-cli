@@ -86,6 +86,17 @@ describe('nxip mcp over stdio', () => {
     expect(lines[0]).toContain('NXIP_API_KEY');
   }, 20_000);
 
+  // Fails closed: a typo for --read-only must not start a server with the
+  // write tools enabled.
+  it('exits non-zero with one stderr line on an unrecognised flag, even with a valid key', async () => {
+    const result = await runCli(['mcp', '--readonly'], { NXIP_API_KEY: API_KEY, NXIP_URL: apiUrl });
+    expect(result.code).not.toBe(0);
+    expect(result.stdout).toBe('');
+    const lines = result.stderr.trim().split('\n');
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('"--readonly"');
+  }, 20_000);
+
   it('writes nothing but JSON-RPC to stdout, and never prints the key', async () => {
     const messages = [
       { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'stdio-test', version: '0' } } },
