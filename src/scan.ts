@@ -496,8 +496,10 @@ export function formatScanReport(report: ScanReport): string {
     );
     lines.push('');
 
+    lines.push('  The networks in each collision below cannot be peered or routed to each');
+    lines.push('  other without renumbering one side:');
+    lines.push('');
     lines.push(...formatOverlapClusters(report));
-    lines.push('  These cannot be peered or routed to each other without renumbering one side.');
     lines.push('');
   } else {
     lines.push(`No overlapping ${networkNoun(report)} address space found.`);
@@ -767,8 +769,12 @@ export function renderDiscoveryManifest(report: ScanReport, options: ManifestOpt
     lines.push('# entries are still here, and importing neither side is also valid while');
     lines.push('# you renumber.');
     lines.push('#');
+    // Above the list, not below it: underneath, it sat directly over the
+    // uncommented entries and read as if it described them.
+    lines.push('# The networks in each collision below cannot be peered or routed to each');
+    lines.push('# other without renumbering one side:');
+    lines.push('#');
     lines.push(...formatOverlapClusters(report, '#'));
-    lines.push('# These cannot be peered or routed to each other without renumbering one side.');
     lines.push('');
   }
 
@@ -833,7 +839,11 @@ export function renderDiscoveryManifest(report: ScanReport, options: ManifestOpt
   }
 
   const subnetLines: string[] = [];
-  const used = new Set<string>();
+  // Seeded with every network's name, commented-out ones included: children
+  // find their parent by name, so a subnet that shared a network's name
+  // would make `parent:` ambiguous, and uncommenting a collision loser must
+  // not create a clash either.
+  const used = new Set<string>([...pools, ...heldBack].map((pool) => pool.name));
   const orphans: string[] = [];
   const defaultNetworkSubnets: string[] = [];
   const collisionLoserSubnets: string[] = [];
@@ -878,15 +888,17 @@ export function renderDiscoveryManifest(report: ScanReport, options: ManifestOpt
 
     // These are the names the subnets are actually created with, so a bare
     // counter is not good enough: "default" and "default-2" say nothing
-    // about which network each belongs to, and clouds hand out the same
-    // subnet names in every VNet. On a clash, qualify with the network,
-    // which is the thing that actually distinguishes them.
+    // about which subnet is which, and clouds hand out the same subnet names
+    // in every VNet. On a clash, qualify with the CIDR, the same rule the
+    // networks above follow. Prefixing the network's name instead produced
+    // names like "vpc 10.50.1.0/24-subnet-az1" that no longer resembled the
+    // subnet, and the `parent:` line already says which network it is in.
     const base = subnet.name ?? subnet.id;
     let name = base;
     if (used.has(name)) {
-      name = `${pool.name}-${base}`;
+      name = `${base} ${subnet.cidr}`;
       let suffix = 2;
-      while (used.has(name)) name = `${pool.name}-${base}-${suffix++}`;
+      while (used.has(name)) name = `${base} ${subnet.cidr} (${suffix++})`;
     }
     used.add(name);
 

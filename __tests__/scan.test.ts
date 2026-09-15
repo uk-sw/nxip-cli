@@ -599,11 +599,13 @@ describe('renderDiscoveryManifest', () => {
     // parseManifest rejects duplicate names outright, so this would throw if
     // the de-duplication were missing.
     //
-    // Qualified by network rather than counter-suffixed: these are the names
-    // the subnets are really created with, and "private-2" says nothing
-    // about which network it belongs to.
+    // Qualified by CIDR rather than counter-suffixed: these are the names the
+    // subnets are really created with, and "private-2" says nothing about
+    // which subnet is which. Once prefixed with the network's name, which
+    // read badly when that name was itself qualified ("vpc 10.50.1.0/24-
+    // private") and repeated what `parent:` already says.
     const entries = childrenOf(parseManifest(renderDiscoveryManifest(duplicated)));
-    expect(entries.map((e) => e.name)).toEqual(['private', 'prod-private']);
+    expect(entries.map((e) => e.name)).toEqual(['private', 'private 10.0.2.0/24']);
   });
 
   it('falls back to the subnet id when AWS has no Name tag', () => {
@@ -1043,5 +1045,70 @@ describe('when a manifest was generated', () => {
   it('is a comment, so the file still parses as the same manifest', () => {
     const rendered = renderDiscoveryManifest(report(), { generatedAt: new Date('2026-09-15T14:02:11Z') });
     expect(parseFullManifest(rendered).subnets[0].body.cidr).toBe('10.9.0.0/16');
+  });
+});
+
+describe('names when a lab reuses the same Name tags', () => {
+  // Two VPCs built from one template: same VPC Name tag, same subnet Name
+  // tags, different blocks. The shape of the report that prompted this.
+  const lab = () =>
+    analyseDiscovery(
+      discovery({
+        regions: ['ap-northeast-1'],
+        networks: [
+          { id: 'vpc-a', name: 'lab-vpc', region: 'ap-northeast-1', cidrs: ['10.50.0.0/24'] },
+          { id: 'vpc-b', name: 'lab-vpc', region: 'ap-northeast-1', cidrs: ['10.50.1.0/24'] },
+        ],
+        subnets: [
+          { id: 'subnet-a1', name: 'lab-subnet-az1', networkId: 'vpc-a', region: 'ap-northeast-1', cidr: '10.50.0.0/26' },
+          { id: 'subnet-b1', name: 'lab-subnet-az1', networkId: 'vpc-b', region: 'ap-northeast-1', cidr: '10.50.1.0/26' },
+        ],
+      })
+    );
+
+  it('qualifies a clashing subnet name with its own CIDR, not the network name', () => {
+    const rendered = renderDiscoveryManifest(lab());
+    expect(rendered).toContain('- name: "lab-subnet-az1"');
+    expect(rendered).toContain('- name: "lab-subnet-az1 10.50.1.0/26"');
+    expect(rendered).not.toMatch(/name: "lab-vpc[^"]*-lab-subnet-az1"/);
+  });
+
+  it('still points each subnet at its own network', () => {
+    const parsed = parseFullManifest(renderDiscoveryManifest(lab()));
+    const parentOf = (cidr: string) => parsed.subnets.find((s) => s.body.cidr === cidr)?.parent;
+    expect(parentOf('10.50.0.0/26')).toBe('lab-vpc');
+    expect(parentOf('10.50.1.0/26')).toBe('lab-vpc 10.50.1.0/24');
+  });
+
+  it('never gives a subnet the same name as a network', () => {
+    const report = analyseDiscovery(
+      discovery({
+        networks: [{ id: 'vpc-1', name: 'app', region: 'eu-west-2', cidrs: ['10.9.0.0/16'] }],
+        subnets: [{ id: 'subnet-1', name: 'app', networkId: 'vpc-1', region: 'eu-west-2', cidr: '10.9.1.0/24' }],
+      })
+    );
+    const names = parseFullManifest(renderDiscoveryManifest(report)).subnets.map((s) => s.body.name);
+    expect(new Set(names).size).toBe(names.length);
+    expect(names).toContain('app 10.9.1.0/24');
+  });
+});
+
+describe('the peering note in a collision warning', () => {
+  it('sits above the collision list, not above the entries that follow it', () => {
+    const report = analyseDiscovery(
+      discovery({
+        networks: [
+          { id: 'vpc-a', name: 'a', region: 'eu-west-2', cidrs: ['10.0.0.0/16'] },
+          { id: 'vpc-b', name: 'b', region: 'eu-west-2', cidrs: ['10.0.0.0/20'] },
+        ],
+      })
+    );
+    for (const text of [renderDiscoveryManifest(report), formatScanReport(report)]) {
+      const lines = text.split('\n');
+      const note = lines.findIndex((l) => l.includes('without renumbering one side'));
+      const listed = lines.findIndex((l) => l.includes(' vs '));
+      expect(note).toBeGreaterThan(-1);
+      expect(listed).toBeGreaterThan(note);
+    }
   });
 });
