@@ -83,8 +83,8 @@ Or run it without installing:
 npx nxip-cli scan aws
 ```
 
-`scan` and `scaffold` need no nxip account. `plan` and `apply` need an API
-key, free at [nx-ip.com](https://nx-ip.com/signup).
+`scan` and `scaffold` need no nxip account. `plan`, `apply` and `mcp` need an
+API key, free at [nx-ip.com](https://nx-ip.com/signup).
 
 ## Scanning a cloud account (`nxip scan`)
 
@@ -411,6 +411,91 @@ Kubernetes CIDR authority modules, applied to a whole site instead of one
 cluster. Cloud-first for now: a pool must already exist for each
 (environment, region) combination this produces, on-prem sites are a
 later extension once a discovery agent or CSV import exists to seed them.
+
+## Letting an AI agent use nxip (`nxip mcp`)
+
+`nxip mcp` is an [MCP](https://modelcontextprotocol.io) server over stdio.
+It lets Claude Desktop, Claude Code, Cursor or any other MCP client read your
+organization's address space through nxip and, if the key allows it, allocate
+from it.
+
+Claude Desktop (`claude_desktop_config.json`), Cursor (`.cursor/mcp.json`) or
+Claude Code (`.mcp.json` in a project) all take the same block:
+
+```json
+{
+  "mcpServers": {
+    "nxip": {
+      "command": "npx",
+      "args": ["-y", "nxip-cli", "mcp"],
+      "env": {
+        "NXIP_API_KEY": "<your key>"
+      }
+    }
+  }
+}
+```
+
+Or add it to Claude Code from the command line:
+
+```bash
+claude mcp add nxip -e NXIP_API_KEY=<your key> -- npx -y nxip-cli mcp
+```
+
+`NXIP_URL` is optional and defaults to `https://nxip.dev`. Without
+`NXIP_API_KEY` the server exits at startup and says so on stderr, which is
+where MCP clients show a server's log.
+
+### The tools
+
+| Tool | What it does | Calls |
+|---|---|---|
+| `list_pools` | Pools, one page at a time, with utilization | `GET /v1/pools` |
+| `get_pool` | One pool by id | `GET /v1/pools/:id` |
+| `forecast_pools` | When each pool runs out, from real allocation history | `GET /v1/pools/forecast` |
+| `list_subnets` | Subnets, filterable by environment, region and family | `GET /v1/subnets` |
+| `get_subnet` | One subnet by id | `GET /v1/subnets/:id` |
+| `list_addresses` | Addresses registered in a subnet | `GET /v1/subnets/:id/addresses` |
+| `lookup_ip` | What owns an IP: address, subnet or pool | `GET /v1/lookup` |
+| `search` | Free text across names, CIDRs, hostnames and metadata | `GET /v1/search` |
+| `get_usage` | Tier and usage against each limit | `GET /v1/organizations/usage` |
+| `preview_subnet` | What `create_subnet` would do, without doing it | `POST /v1/subnets/preview` |
+| `create_pool` | Create a pool | `POST /v1/pools` |
+| `create_subnet` | Allocate a subnet | `POST /v1/subnets` |
+| `allocate_address` | Register a specific address in a subnet | `POST /v1/subnets/:id/addresses` |
+
+There are no update or delete tools.
+
+### Why an agent can be trusted to allocate
+
+The agent cannot invent a CIDR, it can only ask nxip for one. Every tool is a
+thin call to one existing API endpoint, so a write from an agent goes through
+exactly the same checks as a write from Terraform: overlap refusal, tier
+limits, the key's role, and the audit log. The server checks none of these
+itself, because a second copy of the rules would drift from the real ones.
+When nxip refuses, the agent gets nxip's own message back as a tool error,
+and the conversation carries on.
+
+So the agent has exactly the permissions of the key you give it:
+
+- A **READ_ONLY** key can use every read tool and `preview_subnet`. The three
+  create tools are refused by the API with a 403.
+- An **ADMIN** or **MEMBER** key can also create pools, subnets and addresses.
+
+The key is never included in anything the server returns or logs.
+
+### `--read-only`
+
+```json
+"args": ["-y", "nxip-cli", "mcp", "--read-only"]
+```
+
+Registers only the ten read tools, whatever the key's role allows. The write
+tools are not listed at all, so the agent never plans around them, and a
+call to one by name is refused. Use it when you want an agent to answer
+questions about your address space with a key that could otherwise write,
+though a READ_ONLY key is the stronger guarantee, since that one is enforced
+by the API.
 
 ## Field reference
 
