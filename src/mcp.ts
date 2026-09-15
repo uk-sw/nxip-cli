@@ -16,6 +16,7 @@ import {
   lookupIp,
   NxipApiError,
   previewSubnet,
+  resolveTargetLine,
   search,
   type NxipClientOptions,
 } from './client.js';
@@ -641,7 +642,9 @@ export function createMcpServer(client: NxipClientOptions, { readOnly }: McpServ
  * corrupts the JSON-RPC stream and the client drops the connection. The SDK
  * writes to process.stdout directly, so the console methods that would
  * otherwise print there are pointed at stderr, which is where every
- * diagnostic belongs anyway.
+ * diagnostic belongs anyway. That includes the target line below: it must
+ * never reach stdout, so it goes out with console.error like everything
+ * else here.
  */
 export async function runMcpServer(client: NxipClientOptions, serverOptions: McpServerOptions): Promise<void> {
   console.log = console.error;
@@ -650,6 +653,17 @@ export async function runMcpServer(client: NxipClientOptions, serverOptions: Mcp
 
   const server = createMcpServer(client, serverOptions);
   await server.connect(new StdioServerTransport());
+
+  // The organization this server acts on is fixed for the life of the
+  // process, not a tool argument (docs/specs/msp-tenancy-phase2.md Part C),
+  // so an agent talking to it cannot switch customers on its own. Named
+  // once here, at startup, the same rule plan and apply use for their own
+  // target line - advisory only, so a failed check prints nothing rather
+  // than failing server startup. The same timeout as every tool call, so a
+  // hung network cannot delay "server running" forever.
+  const targetLine = await resolveTargetLine({ ...client, timeoutMs: client.timeoutMs ?? REQUEST_TIMEOUT_MS });
+  if (targetLine) console.error(targetLine);
+
   console.error(
     `nxip MCP server running on stdio against ${client.baseUrl}${serverOptions.readOnly ? ' (read-only: write tools not registered)' : ''}.`
   );

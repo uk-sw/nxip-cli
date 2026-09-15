@@ -4,7 +4,12 @@
  * command should pay for.
  */
 const FLAGS = new Set(['--read-only']);
-const OPTIONS_WITH_VALUE = new Set(['--api-key', '--url']);
+// --organization: docs/specs/msp-tenancy-phase2.md Part C. It names the
+// customer organization the server acts on for the life of the process, not
+// a tool argument, so an agent cannot switch customers on its own.
+const OPTIONS_WITH_VALUE = new Set(['--api-key', '--url', '--organization']);
+
+const USAGE = 'Usage: npx nxip-cli mcp [--read-only] [--api-key KEY] [--url URL] [--organization ID]';
 
 /**
  * Returns a one-line complaint about the first argument `nxip mcp` does not
@@ -22,12 +27,12 @@ export function findUnknownMcpArgument(rest: string[]): string | undefined {
     if (OPTIONS_WITH_VALUE.has(arg)) {
       const value = rest[i + 1];
       if (value === undefined || value.startsWith('-')) {
-        return `${arg} needs a value. Usage: npx nxip-cli mcp [--read-only] [--api-key KEY] [--url URL]`;
+        return `${arg} needs a value. ${USAGE}`;
       }
       i++;
       continue;
     }
-    return `Unknown argument "${arg}" for mcp. Usage: npx nxip-cli mcp [--read-only] [--api-key KEY] [--url URL]`;
+    return `Unknown argument "${arg}" for mcp. ${USAGE}`;
   }
   return undefined;
 }
