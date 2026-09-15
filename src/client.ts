@@ -39,9 +39,15 @@ const API_KEY_HEADER = 'x-api-key';
  * and nxip-terraform-plan-action do: an explicit flag wins, falling back
  * to NXIP_API_KEY/NXIP_URL env vars, then https://nxip.dev - so a
  * NXIP_API_KEY already set for the Terraform provider works here too.
+ *
+ * The key is trimmed once, here. A key read with `$(cat key.txt)` or pasted
+ * into a config file often carries a trailing newline; fetch strips that
+ * from the header anyway, so trimming changes nothing on the wire. What it
+ * does change is that the value sent and the value the MCP server scrubs
+ * from its output are the same string, rather than differing by whitespace.
  */
 export function resolveClientOptions(flagApiKey?: string, flagUrl?: string): NxipClientOptions {
-  const apiKey = flagApiKey || process.env.NXIP_API_KEY || '';
+  const apiKey = (flagApiKey || process.env.NXIP_API_KEY || '').trim();
   const baseUrl = (flagUrl || process.env.NXIP_URL || 'https://nxip.dev').replace(/\/+$/, '');
   return { apiKey, baseUrl };
 }
@@ -51,6 +57,26 @@ export class NxipApiError extends Error {
     super(message);
     this.name = 'NxipApiError';
   }
+}
+
+/**
+ * The API's schema-validation 400 says only "Payload validation failed." and
+ * puts what actually failed in issues[] (see setErrorHandler in the API's
+ * app.ts). Dropping issues[] leaves the caller, often an agent deciding what
+ * to change, with nothing to act on, so they are folded into the message.
+ */
+function withIssues(message: string, issues: unknown): string {
+  if (!Array.isArray(issues) || issues.length === 0) return message;
+  const details = issues
+    .map((issue) => {
+      const { field, message: issueMessage } = (issue ?? {}) as { field?: unknown; message?: unknown };
+      // instancePath-style fields arrive as "/prefixLength"; the slash is noise.
+      const name = typeof field === 'string' ? field.replace(/^\//, '') : '';
+      const text = typeof issueMessage === 'string' ? issueMessage : 'invalid';
+      return name && name !== 'unknown' ? `${name}: ${text}` : text;
+    })
+    .join('; ');
+  return `${message.replace(/\.$/, '')}: ${details}`;
 }
 
 async function request<T>(
@@ -80,7 +106,7 @@ async function request<T>(
   if (!response.ok) {
     const message =
       parsed && typeof parsed === 'object' && 'message' in parsed
-        ? String((parsed as { message: unknown }).message)
+        ? withIssues(String((parsed as { message: unknown }).message), (parsed as { issues?: unknown }).issues)
         : text || `nxip API returned unexpected status ${response.status}`;
     throw new NxipApiError(response.status, message);
   }
@@ -156,6 +182,11 @@ export async function listPools(options: NxipClientOptions): Promise<NxipPool[]>
  * id of `x/../../organizations/usage` would address a different route than
  * the one the caller asked for. The API would still authorise whatever it
  * reached, but a tool must only ever call the endpoint it names.
+ *
+ * Encoding alone is not enough: "." and ".." survive encodeURIComponent and
+ * fetch then collapses them as dot segments. Ids that could do that are
+ * refused earlier, by the MCP tool input schemas (see idSchema in mcp.ts),
+ * so no request is made at all.
  */
 function segment(id: string): string {
   return encodeURIComponent(id);

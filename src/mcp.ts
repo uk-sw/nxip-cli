@@ -53,6 +53,28 @@ const metadataSchema = z
 
 const family = z.enum(['IPV4', 'IPV6']);
 
+// Static route segments that sit where an id goes: GET /v1/pools/forecast,
+// POST /v1/subnets/preview. An "id" equal to one of them would reach that
+// route instead of the record the tool names.
+const RESERVED_ID_SEGMENTS = new Set(['forecast', 'preview']);
+
+/**
+ * Every id this API issues is a Prisma cuid: lowercase letters and digits
+ * (see @default(cuid()) throughout packages/db/prisma/schema.prisma). The
+ * pattern is a little wider than that, allowing upper case, "_" and "-", so
+ * it still holds if the id format changes, but it admits nothing that can
+ * change the shape of a URL path: no "/", no "%", no ".", so no "." or ".."
+ * dot segments, which encodeURIComponent leaves intact and fetch collapses.
+ * Checked here so a bad id is refused before any request is made.
+ */
+function idSchema(description: string) {
+  return z
+    .string()
+    .regex(/^[A-Za-z0-9_-]{1,64}$/, 'Must be an nxip id: letters, digits, "_" or "-".')
+    .refine((id) => !RESERVED_ID_SEGMENTS.has(id), { message: 'Must be an nxip id, not a route name.' })
+    .describe(description);
+}
+
 // The list routes take page/limit as query strings and clamp limit to 100.
 // Offered as numbers here, since that is what they mean, with the same bounds.
 const page = z.number().int().min(1).optional().describe('Page number, starting at 1. Defaults to 1.');
@@ -126,10 +148,6 @@ const subnetRequest = z
 // Results
 // ==========================================
 
-// Real keys are `nxip_live_` plus a long random tail. The floor only stops a
-// placeholder like "x" from shredding every result it happens to appear in.
-const MIN_SCRUBBABLE_KEY_LENGTH = 8;
-
 /**
  * The key must never reach the model, whatever path the text took to get
  * here. Nothing in this server puts it in a result on purpose, but an API
@@ -138,8 +156,14 @@ const MIN_SCRUBBABLE_KEY_LENGTH = 8;
  * conversation transcript. So every result is scrubbed on the way out.
  */
 function scrub(text: string, apiKey: string): string {
-  if (apiKey.length < MIN_SCRUBBABLE_KEY_LENGTH) return text;
-  return text.split(apiKey).join('[redacted]');
+  // Both forms, because a key that reached this server untrimmed (a trailing
+  // newline from a config file) is sent trimmed: fetch strips header
+  // whitespace, so an echo from the API carries the trimmed form. No length
+  // floor either: a short key is still a key. An empty one is skipped, since
+  // splitting on "" would put the marker between every character.
+  // Longest first, so the trimmed form cannot split the untrimmed one apart.
+  const forms = [...new Set([apiKey, apiKey.trim()])].filter((form) => form.length > 0).sort((a, b) => b.length - a.length);
+  return forms.reduce((out, form) => out.split(form).join('[redacted]'), text);
 }
 
 function textResult(options: NxipClientOptions, parts: string[], isError = false): CallToolResult {
@@ -154,7 +178,7 @@ function textResult(options: NxipClientOptions, parts: string[], isError = false
  * on. Returned, never thrown: a thrown error would still be caught by the
  * SDK, but with its own wording, and the 403 explanation below would be lost.
  */
-function errorResult(options: NxipClientOptions, error: unknown): CallToolResult {
+function errorResult(options: NxipClientOptions, error: unknown, write?: WriteCheck): CallToolResult {
   if (error instanceof NxipApiError) {
     if (error.status === 403) {
       // Explains the refusal after the fact rather than predicting it before
@@ -180,7 +204,25 @@ function errorResult(options: NxipClientOptions, error: unknown): CallToolResult
     err?.name === 'TimeoutError'
       ? `no response within ${REQUEST_TIMEOUT_MS / 1000} seconds`
       : err?.cause?.code ?? err?.cause?.message ?? err?.message ?? String(error);
-  return textResult(options, [`Could not reach nxip at ${options.baseUrl}: ${reason}`], true);
+  const unreachable = `Could not reach nxip at ${options.baseUrl}: ${reason}`;
+  if (!write) return textResult(options, [unreachable], true);
+
+  // A write that failed this way may still have landed: a timeout or a
+  // dropped connection says nothing about whether the API had already
+  // committed the create before the answer was lost. Retrying blind can
+  // allocate twice, which is the one outcome an allocation tool must not
+  // cause, so the model is told to look before it tries again.
+  return textResult(
+    options,
+    [`${unreachable}. The ${write.what} may still have been created. Before retrying, check whether it exists with ${write.checkWith}.`],
+    true
+  );
+}
+
+/** For a write tool: what it creates, and which read tools can confirm whether it did. */
+interface WriteCheck {
+  what: string;
+  checkWith: string;
 }
 
 /**
@@ -191,13 +233,14 @@ function errorResult(options: NxipClientOptions, error: unknown): CallToolResult
 async function respond<T>(
   options: NxipClientOptions,
   call: () => Promise<T>,
-  summarize: (body: T) => string
+  summarize: (body: T) => string,
+  write?: WriteCheck
 ): Promise<CallToolResult> {
   let body: T;
   try {
     body = await call();
   } catch (error) {
-    return errorResult(options, error);
+    return errorResult(options, error, write);
   }
 
   // A summary that cannot be built (an unexpected body shape) must not turn
@@ -292,7 +335,7 @@ export function createMcpServer(client: NxipClientOptions, { readOnly }: McpServ
     {
       title: 'Get an IP pool',
       description: 'Get one IP pool by id, with its utilization. Works with any API key role.',
-      inputSchema: z.object({ id: z.string().min(1).describe('The pool id.') }),
+      inputSchema: z.object({ id: idSchema('The pool id.') }),
       annotations: READ,
     },
     ({ id }) =>
@@ -356,7 +399,7 @@ export function createMcpServer(client: NxipClientOptions, { readOnly }: McpServ
     {
       title: 'Get a subnet',
       description: 'Get one subnet by id, including its pool, parent subnet if nested, and address utilization. Works with any API key role.',
-      inputSchema: z.object({ id: z.string().min(1).describe('The subnet id.') }),
+      inputSchema: z.object({ id: idSchema('The subnet id.') }),
       annotations: READ,
     },
     ({ id }) =>
@@ -378,7 +421,7 @@ export function createMcpServer(client: NxipClientOptions, { readOnly }: McpServ
         'List the individual IP addresses registered in one subnet, one page at a time, optionally only ACTIVE ' +
         'or only RESERVED ones. Works with any API key role.',
       inputSchema: z.object({
-        subnetId: z.string().min(1).describe('The subnet id.'),
+        subnetId: idSchema('The subnet id.'),
         status: z.enum(['ACTIVE', 'RESERVED']).optional().describe('Only addresses with this status.'),
         page,
         limit,
@@ -529,7 +572,8 @@ export function createMcpServer(client: NxipClientOptions, { readOnly }: McpServ
       respond(
         options,
         () => createPool(options, body),
-        (pool) => `Created pool ${pool.name} ${pool.cidr} (${pool.environment} / ${pool.region}, id ${pool.id}).`
+        (pool) => `Created pool ${pool.name} ${pool.cidr} (${pool.environment} / ${pool.region}, id ${pool.id}).`,
+        { what: 'pool', checkWith: 'list_pools or search' }
       )
   );
 
@@ -552,7 +596,8 @@ export function createMcpServer(client: NxipClientOptions, { readOnly }: McpServ
         () => createSubnet(options, body),
         (subnet) =>
           `Allocated ${subnet.cidr}${subnet.name ? ` (${subnet.name})` : ''} ` +
-          `${subnet.parentSubnetId ? `under subnet ${subnet.parentSubnetId}` : `in pool ${subnet.ipPoolId}`}, id ${subnet.id}.`
+          `${subnet.parentSubnetId ? `under subnet ${subnet.parentSubnetId}` : `in pool ${subnet.ipPoolId}`}, id ${subnet.id}.`,
+        { what: 'subnet', checkWith: 'list_subnets or search' }
       )
   );
 
@@ -567,7 +612,7 @@ export function createMcpServer(client: NxipClientOptions, { readOnly }: McpServ
         'it is free in nxip. Requires an API key with the ADMIN or MEMBER role.',
       inputSchema: z
         .object({
-          subnetId: z.string().min(1).describe('The subnet the address belongs to.'),
+          subnetId: idSchema('The subnet the address belongs to.'),
           address: z.string().min(1).describe('The IP address, for example 10.20.4.17.'),
           status: z.enum(['ACTIVE', 'RESERVED']).optional().describe('ACTIVE (in use) or RESERVED. Defaults to ACTIVE.'),
           hostname: z.string().min(1).optional().describe('Hostname of the machine using this address.'),
@@ -581,7 +626,8 @@ export function createMcpServer(client: NxipClientOptions, { readOnly }: McpServ
         options,
         () => createAddress(options, subnetId, body),
         (address) =>
-          `Registered ${address.address} as ${address.status}${address.hostname ? ` (${address.hostname})` : ''} in subnet ${address.subnetId}, id ${address.id}.`
+          `Registered ${address.address} as ${address.status}${address.hostname ? ` (${address.hostname})` : ''} in subnet ${address.subnetId}, id ${address.id}.`,
+        { what: 'address record', checkWith: 'list_addresses or lookup_ip' }
       )
   );
 

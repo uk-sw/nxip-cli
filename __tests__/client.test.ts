@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createSubnet, listPools, NxipApiError, previewSubnet, resolveClientOptions } from '../src/client.js';
+import { createSubnet, getSubnet, listPools, NxipApiError, previewSubnet, resolveClientOptions } from '../src/client.js';
 
 describe('resolveClientOptions', () => {
   const originalEnv = { ...process.env };
@@ -18,6 +18,18 @@ describe('resolveClientOptions', () => {
     process.env.NXIP_API_KEY = 'env-key';
     const options = resolveClientOptions('flag-key');
     expect(options.apiKey).toBe('flag-key');
+  });
+
+  // The value sent and the value the MCP server scrubs must be one string.
+  it('trims whitespace from the key, from either source', () => {
+    process.env.NXIP_API_KEY = '  env-key\n';
+    expect(resolveClientOptions().apiKey).toBe('env-key');
+    expect(resolveClientOptions('flag-key\n').apiKey).toBe('flag-key');
+  });
+
+  it('a whitespace-only key counts as missing', () => {
+    process.env.NXIP_API_KEY = '\n';
+    expect(resolveClientOptions().apiKey).toBe('');
   });
 
   it('defaults the URL to https://nxip.dev', () => {
@@ -120,5 +132,39 @@ describe('listPools pagination', () => {
   it('throws rather than truncating when the ceiling is reached', async () => {
     vi.stubGlobal('fetch', pagedFetch(500));
     await expect(listPools(options)).rejects.toThrow(/more than 10000 pools/);
+  });
+});
+
+describe('request errors and paths', () => {
+  const options = { apiKey: 'k', baseUrl: 'https://example.test' };
+  afterEach(() => vi.unstubAllGlobals());
+
+  // The API's validation 400 carries the useful part in issues[], not message.
+  it("folds a 400's issues into the error message", async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({ statusCode: 400, error: 'Bad Request', message: 'Payload validation failed.', issues: [{ field: '/prefixLength', message: 'must be <= 32' }] }),
+          { status: 400 }
+        )
+      )
+    );
+    const error = await previewSubnet(options, { family: 'IPV4', prefixLength: 24 }).catch((e) => e);
+    expect(error).toBeInstanceOf(NxipApiError);
+    expect(error.message).toBe('Payload validation failed: prefixLength: must be <= 32');
+  });
+
+  it('leaves a message without issues untouched', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ message: 'Pool is full.', issues: [] }), { status: 409 })));
+    const error = await previewSubnet(options, { family: 'IPV4', prefixLength: 24 }).catch((e) => e);
+    expect(error.message).toBe('Pool is full.');
+  });
+
+  it('encodes an id as one path segment', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    await getSubnet(options, 'a/b?c');
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('https://example.test/v1/subnets/a%2Fb%3Fc');
   });
 });

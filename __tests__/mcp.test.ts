@@ -434,11 +434,122 @@ describe('mcp server', () => {
     });
   });
 
-  it('encodes ids as a single path segment, so an id cannot reach another route', async () => {
-    fetchMock.mockResolvedValue(jsonResponse({ statusCode: 404, error: 'Not Found', message: 'nope' }, 404));
+  describe('ids that could change the request path are refused before any request', () => {
+    // "." and ".." survive encodeURIComponent and fetch collapses them, so
+    // list_addresses with subnetId ".." would GET /v1/addresses; "forecast"
+    // and "preview" are real static routes sitting where an id goes.
+    const badIds = ['.', '..', 'forecast', 'preview', '../organizations/usage', 'a/b', 'a%2Fb', 'a.b', ' sub_1', '', 'x'.repeat(65)];
+    const idTools: [string, (id: string) => Record<string, unknown>][] = [
+      ['get_pool', (id) => ({ id })],
+      ['get_subnet', (id) => ({ id })],
+      ['list_addresses', (id) => ({ subnetId: id })],
+      ['allocate_address', (id) => ({ subnetId: id, address: '10.20.4.17' })],
+    ];
+
+    for (const [tool, argsFor] of idTools) {
+      it.each(badIds)(`${tool} refuses id %j`, async (id) => {
+        const client = await connect();
+        const result = await call(client, tool, argsFor(id));
+        expect(result.isError).toBe(true);
+        expect(fetchMock).not.toHaveBeenCalled();
+      });
+    }
+
+    it('accepts a real cuid', async () => {
+      const cuid = 'cm0x1a2b3c0000d4e5f6g7h8i9';
+      fetchMock.mockResolvedValue(jsonResponse({ ...pool, id: cuid }));
+      const client = await connect();
+      const result = await call(client, 'get_pool', { id: cuid });
+      expect(result.isError).toBeFalsy();
+      expect(fetchMock.mock.calls[0]?.[0]).toBe(`${BASE_URL}/v1/pools/${cuid}`);
+    });
+  });
+
+  describe('a write that could not reach nxip', () => {
+    const writes: [string, RegExp][] = [
+      ['create_pool', /The pool may still have been created\. Before retrying, check whether it exists with list_pools or search\.$/],
+      ['create_subnet', /The subnet may still have been created\. Before retrying, check whether it exists with list_subnets or search\.$/],
+      ['allocate_address', /The address record may still have been created\. Before retrying, check whether it exists with list_addresses or lookup_ip\.$/],
+    ];
+
+    it.each(writes)('%s says the change may have landed and how to check, after a timeout', async (tool, warning) => {
+      fetchMock.mockRejectedValue(new DOMException('The operation was aborted due to timeout', 'TimeoutError'));
+      const client = await connect();
+      const result = await call(client, tool, CASES.find((c) => c.tool === tool)!.args);
+      expect(result.isError).toBe(true);
+      expect(texts(result)[0]).toMatch(new RegExp(`^Could not reach nxip at ${BASE_URL}: no response within 30 seconds\\. `));
+      expect(texts(result)[0]).toMatch(warning);
+    });
+
+    it.each(writes)('%s says the same after a dropped connection', async (tool, warning) => {
+      fetchMock.mockRejectedValue(Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNRESET' } }));
+      const client = await connect();
+      const result = await call(client, tool, CASES.find((c) => c.tool === tool)!.args);
+      expect(texts(result)[0]).toMatch(warning);
+    });
+
+    it('a read keeps the plain wording, since retrying a read is harmless', async () => {
+      fetchMock.mockRejectedValue(new DOMException('The operation was aborted due to timeout', 'TimeoutError'));
+      const client = await connect();
+      for (const testCase of CASES.filter((c) => (READ_TOOL_NAMES as readonly string[]).includes(c.tool))) {
+        const result = await call(client, testCase.tool, testCase.args);
+        expect(texts(result)[0], testCase.tool).toBe(`Could not reach nxip at ${BASE_URL}: no response within 30 seconds`);
+      }
+    });
+
+    it('an API refusal of a write is not reported as possibly applied', async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ statusCode: 409, error: 'Conflict', message: 'overlaps' }, 409));
+      const client = await connect();
+      const result = await call(client, 'create_subnet', CASES.find((c) => c.tool === 'create_subnet')!.args);
+      expect(texts(result)[0]).not.toMatch(/may still have been created/);
+    });
+  });
+
+  it("a 400's validation issues reach the tool error", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(
+        {
+          statusCode: 400,
+          error: 'Bad Request',
+          message: 'Payload validation failed.',
+          issues: [
+            { field: '/prefixLength', message: 'must be <= 32' },
+            { field: 'cidr', message: 'Invalid' },
+          ],
+        },
+        400
+      )
+    );
     const client = await connect();
-    await call(client, 'get_subnet', { id: '../organizations/usage' });
-    expect(fetchMock.mock.calls[0]?.[0]).toBe(`${BASE_URL}/v1/subnets/..%2Forganizations%2Fusage`);
+    const result = await call(client, 'create_subnet', CASES.find((c) => c.tool === 'create_subnet')!.args);
+    expect(result.isError).toBe(true);
+    expect(texts(result)[0]).toBe('nxip returned an error (400): Payload validation failed: prefixLength: must be <= 32; cidr: Invalid');
+  });
+
+  describe('scrubbing keys that are short or carry whitespace', () => {
+    it('scrubs a key of any length', async () => {
+      const shortKey = 'Zq9';
+      fetchMock.mockResolvedValue(jsonResponse({ message: `rejected key ${shortKey}` }, 401));
+      const client = await connect(false, { apiKey: shortKey, baseUrl: BASE_URL });
+      const result = await call(client, 'get_usage', {});
+      expect(JSON.stringify(result)).not.toContain(shortKey);
+      expect(texts(result)[0]).toContain('[redacted]');
+    });
+
+    it('scrubs the trimmed form of a key that arrived with a trailing newline', async () => {
+      // fetch strips header whitespace, so an echo carries the trimmed form.
+      fetchMock.mockResolvedValue(jsonResponse({ message: `rejected key ${API_KEY}` }, 401));
+      const client = await connect(false, { apiKey: `${API_KEY}\n`, baseUrl: BASE_URL });
+      const result = await call(client, 'get_usage', {});
+      expect(JSON.stringify(result)).not.toContain(API_KEY);
+    });
+
+    it('an empty key scrubs nothing rather than everything', async () => {
+      fetchMock.mockResolvedValue(jsonResponse({ data: [], meta: meta(0) }));
+      const client = await connect(false, { apiKey: '', baseUrl: BASE_URL });
+      const result = await call(client, 'list_pools', {});
+      expect(texts(result)[0]).toBe('Found 0 pools; showing page 1 of 1 (0 on this page).');
+    });
   });
 
   describe('the API key never appears in output', () => {

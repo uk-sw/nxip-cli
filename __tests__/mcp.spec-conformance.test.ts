@@ -412,12 +412,14 @@ describe('MCP server conformance to docs/specs/mcp-server.md', () => {
     it('an id cannot steer a tool to a different endpoint', async () => {
       fetchMock.mockResolvedValue(jsonResponse({ statusCode: 404, error: 'Not Found', message: 'Pool not found' }, 404));
       const client = await connect();
-      await call(client, 'get_pool', { id: '../organizations/usage' });
-      await call(client, 'allocate_address', { subnetId: '../../pools', address: '10.0.0.1' });
-      const [getReq, allocReq] = requestsMade();
-      expect(getReq.url.pathname).toMatch(/^\/v1\/pools\/[^/]+$/);
-      expect(getReq.url.pathname).not.toBe('/v1/organizations/usage');
-      expect(allocReq.url.pathname).toMatch(/^\/v1\/subnets\/[^/]+\/addresses$/);
+      // Changed by the builder in the review fix round: ids that could alter
+      // the path are now refused by the input schema, so no request is made
+      // at all, rather than being sent encoded.
+      const getResult = await call(client, 'get_pool', { id: '../organizations/usage' });
+      const allocResult = await call(client, 'allocate_address', { subnetId: '../../pools', address: '10.0.0.1' });
+      expect(getResult.isError).toBe(true);
+      expect(allocResult.isError).toBe(true);
+      expect(requestsMade()).toHaveLength(0);
     });
 
     it('no tool call ever issues a DELETE, PATCH or PUT', async () => {
