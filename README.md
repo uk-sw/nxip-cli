@@ -419,8 +419,10 @@ It lets Claude Desktop, Claude Code, Cursor or any other MCP client read your
 organization's address space through nxip and, if the key allows it, allocate
 from it.
 
-Claude Desktop (`claude_desktop_config.json`), Cursor (`.cursor/mcp.json`) or
-Claude Code (`.mcp.json` in a project) all take the same block:
+The key is a secret: never commit a file containing a real one.
+
+**Claude Desktop** (`claude_desktop_config.json`, which lives in your user
+profile rather than in any repository):
 
 ```json
 {
@@ -436,11 +438,33 @@ Claude Code (`.mcp.json` in a project) all take the same block:
 }
 ```
 
-Or add it to Claude Code from the command line:
+**Claude Code, for yourself** (local scope, stored outside the repository):
 
 ```bash
 claude mcp add nxip -e NXIP_API_KEY=<your key> -- npx -y nxip-cli mcp
 ```
+
+**Claude Code, shared with a project** (`.mcp.json`, which is meant to be
+committed). Claude Code expands `${VAR}` from the environment, so the file
+names the variable and each person keeps their own key in their shell:
+
+```json
+{
+  "mcpServers": {
+    "nxip": {
+      "command": "npx",
+      "args": ["-y", "nxip-cli", "mcp"],
+      "env": {
+        "NXIP_API_KEY": "${NXIP_API_KEY}"
+      }
+    }
+  }
+}
+```
+
+**Cursor** takes the same block as Claude Desktop. Put it in `~/.cursor/mcp.json`
+(your user profile). If you use a project's `.cursor/mcp.json` instead, keep
+that file out of version control while it holds a real key.
 
 `NXIP_URL` is optional and defaults to `https://nxip.dev`. Without
 `NXIP_API_KEY` the server exits at startup and says so on stderr, which is
