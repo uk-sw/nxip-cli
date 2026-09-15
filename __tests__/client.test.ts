@@ -1,5 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createSubnet, getSubnet, listPools, NxipApiError, previewSubnet, resolveClientOptions } from '../src/client.js';
+import {
+  createSubnet,
+  getSubnet,
+  hasCustomerOrganizations,
+  listPools,
+  NxipApiError,
+  previewSubnet,
+  resolveClientOptions,
+  resolveTargetLine,
+} from '../src/client.js';
 
 describe('resolveClientOptions', () => {
   const originalEnv = { ...process.env };
@@ -36,6 +45,134 @@ describe('resolveClientOptions', () => {
     delete process.env.NXIP_URL;
     const options = resolveClientOptions('key');
     expect(options.baseUrl).toBe('https://nxip.dev');
+  });
+
+  // Done means 14: --organization and NXIP_ORGANIZATION, flag over env.
+  it('leaves organizationId off entirely when neither flag nor env var is set', () => {
+    delete process.env.NXIP_ORGANIZATION;
+    const options = resolveClientOptions('key');
+    expect(options).toEqual({ apiKey: 'key', baseUrl: 'https://nxip.dev' });
+    expect(options.organizationId).toBeUndefined();
+  });
+
+  it('falls back to NXIP_ORGANIZATION when the flag is not given', () => {
+    process.env.NXIP_ORGANIZATION = 'org_env';
+    expect(resolveClientOptions('key').organizationId).toBe('org_env');
+  });
+
+  it('an explicit --organization flag wins over NXIP_ORGANIZATION', () => {
+    process.env.NXIP_ORGANIZATION = 'org_env';
+    expect(resolveClientOptions('key', undefined, 'org_flag').organizationId).toBe('org_flag');
+  });
+
+  it('trims whitespace from the organization id, from either source', () => {
+    process.env.NXIP_ORGANIZATION = '  org_env\n';
+    expect(resolveClientOptions('key').organizationId).toBe('org_env');
+    expect(resolveClientOptions('key', undefined, 'org_flag\n').organizationId).toBe('org_flag');
+  });
+
+  it('a whitespace-only organization counts as unset', () => {
+    process.env.NXIP_ORGANIZATION = '\n';
+    expect(resolveClientOptions('key').organizationId).toBeUndefined();
+  });
+});
+
+describe('the x-nxip-organization header (docs/specs/msp-tenancy-phase2.md Part C)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('is sent when organizationId is set', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    await previewSubnet({ apiKey: 'k', baseUrl: 'https://nxip.test', organizationId: 'org_customer' }, { family: 'IPV4', prefixLength: 24 });
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>)['x-nxip-organization']).toBe('org_customer');
+  });
+
+  // A caller's own organization is the default; nothing must ever be sent
+  // that could be mistaken for an intentional (even empty) target.
+  it('is absent, not sent as an empty string, when organizationId is unset', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    await previewSubnet({ apiKey: 'k', baseUrl: 'https://nxip.test' }, { family: 'IPV4', prefixLength: 24 });
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect('x-nxip-organization' in (init.headers as Record<string, string>)).toBe(false);
+  });
+
+  it('is sent on a GET request too', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    await getSubnet({ apiKey: 'k', baseUrl: 'https://nxip.test', organizationId: 'org_customer' }, 'sub_1');
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>)['x-nxip-organization']).toBe('org_customer');
+  });
+});
+
+describe('hasCustomerOrganizations', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const options = { apiKey: 'k', baseUrl: 'https://nxip.test' };
+
+  it('calls GET /v1/organizations/children?limit=1 and returns true when there is at least one', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: [{ id: 'org_child' }], meta: { limit: 1, nextCursor: null } }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    await expect(hasCustomerOrganizations(options)).resolves.toBe(true);
+    const [url] = fetchMock.mock.calls[0] as [string];
+    expect(url).toBe('https://nxip.test/v1/organizations/children?limit=1');
+  });
+
+  it('returns false when data is empty', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: [], meta: { limit: 1, nextCursor: null } }), { status: 200 })));
+    await expect(hasCustomerOrganizations(options)).resolves.toBe(false);
+  });
+
+  it('never sends x-nxip-organization itself, even if somehow set', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: [] }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    await hasCustomerOrganizations({ ...options, organizationId: 'org_x' });
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    // Not part of the contract (this is only ever called when organizationId
+    // is unset), but proves the header logic in request() is what decides
+    // this, not a separate check here.
+    expect((init.headers as Record<string, string>)['x-nxip-organization']).toBe('org_x');
+  });
+
+  it('rejects on a non-2xx response, like any other request', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ message: 'Forbidden' }), { status: 403 })));
+    await expect(hasCustomerOrganizations(options)).rejects.toBeInstanceOf(NxipApiError);
+  });
+});
+
+describe('resolveTargetLine (Done means 14, 15a)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('names the organization directly when set, with no network call', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const line = await resolveTargetLine({ apiKey: 'k', baseUrl: 'https://nxip.test', organizationId: 'org_customer' });
+    expect(line).toBe('Target: customer organization org_customer');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('says "your own organization" when unset and the key\'s organization has customers', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: [{ id: 'org_child' }] }), { status: 200 })));
+    const line = await resolveTargetLine({ apiKey: 'k', baseUrl: 'https://nxip.test' });
+    expect(line).toBe('Target: your own organization. Pass --organization to manage a customer.');
+  });
+
+  it('prints nothing when unset and there are no customers', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: [] }), { status: 200 })));
+    const line = await resolveTargetLine({ apiKey: 'k', baseUrl: 'https://nxip.test' });
+    expect(line).toBeUndefined();
+  });
+
+  // Advisory only: a failed check must never block or throw.
+  it('prints nothing, and does not throw, when the check call fails (network error)', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('fetch failed')));
+    await expect(resolveTargetLine({ apiKey: 'k', baseUrl: 'https://nxip.test' })).resolves.toBeUndefined();
+  });
+
+  it('prints nothing, and does not throw, when the check call returns an error status (for example a READ_ONLY key)', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ message: 'Forbidden' }), { status: 403 })));
+    await expect(resolveTargetLine({ apiKey: 'k', baseUrl: 'https://nxip.test' })).resolves.toBeUndefined();
   });
 });
 

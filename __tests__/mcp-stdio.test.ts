@@ -123,9 +123,12 @@ describe('nxip mcp over stdio', () => {
     expect(byId.get(4).result.content[0].text).toContain("Nothing at /v1/pools/pool_missing");
     expect(byId.get(5).result.isError).toBe(true);
 
-    // Exactly two requests reached the API (the invalid create never did),
-    // both carrying the key, which then appears nowhere the process wrote.
-    expect(seenKeys).toEqual([API_KEY, API_KEY]);
+    // Three requests reached the API: the startup organizations/children
+    // check (see resolveTargetLine, docs/specs/msp-tenancy-phase2.md Part
+    // C), then list_pools and get_pool (the invalid create never made a
+    // request at all). All three carry the key, which then appears nowhere
+    // the process wrote.
+    expect(seenKeys).toEqual([API_KEY, API_KEY, API_KEY]);
     expect(result.stdout).not.toContain(API_KEY);
     expect(result.stderr).not.toContain(API_KEY);
     // Diagnostics did happen, on stderr.
