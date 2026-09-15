@@ -21,6 +21,14 @@ export interface NxipClientOptions {
   apiKey: string;
   baseUrl: string;
   /**
+   * The customer organization this run acts on, sent as x-nxip-organization
+   * on every request (docs/specs/msp-tenancy-phase2.md Part C, mirroring
+   * phase 1's ACTING_ON_BEHALF_HEADER in the API). Unset means the key's own
+   * organization, exactly as before this option existed - request() below
+   * only ever sends the header when this is set, never as an empty value.
+   */
+  organizationId?: string;
+  /**
    * Abort a request that has not answered within this many milliseconds.
    * Unset means no limit, which is what plan and apply have always had. The
    * MCP server sets one: an agent waiting on a hung request has no Ctrl+C,
@@ -34,22 +42,38 @@ export interface NxipClientOptions {
 // until its own HTTP client got centralized - worth not repeating here.
 const API_KEY_HEADER = 'x-api-key';
 
+// Names the customer organization a request acts on behalf of. See
+// ACTING_ON_BEHALF_HEADER in net-saas-monorepo apps/api/src/middleware/
+// auth.ts: the API resolves and enforces it, this client only ever names
+// a target.
+const ORGANIZATION_HEADER = 'x-nxip-organization';
+
 /**
- * Resolves API key/URL the same way terraform-provider-nxip's provider.go
- * and nxip-terraform-plan-action do: an explicit flag wins, falling back
- * to NXIP_API_KEY/NXIP_URL env vars, then https://nxip.dev - so a
- * NXIP_API_KEY already set for the Terraform provider works here too.
+ * Resolves API key/URL/organization the same way terraform-provider-nxip's
+ * provider.go and nxip-terraform-plan-action resolve key/URL: an explicit
+ * flag wins, falling back to NXIP_API_KEY/NXIP_URL/NXIP_ORGANIZATION env
+ * vars, then https://nxip.dev for the URL - so a NXIP_API_KEY already set
+ * for the Terraform provider works here too.
  *
  * The key is trimmed once, here. A key read with `$(cat key.txt)` or pasted
  * into a config file often carries a trailing newline; fetch strips that
  * from the header anyway, so trimming changes nothing on the wire. What it
  * does change is that the value sent and the value the MCP server scrubs
  * from its output are the same string, rather than differing by whitespace.
+ * The organization id is trimmed for the same reason, though unlike the key
+ * it is never a secret and is never scrubbed.
+ *
+ * organizationId is left off the returned object entirely when it resolves
+ * to nothing (rather than set to undefined), so a plain object-equality
+ * check on the result still sees just apiKey and baseUrl when no
+ * organization was given, and so request() below can tell "set" from
+ * "unset" with a single truthiness check.
  */
-export function resolveClientOptions(flagApiKey?: string, flagUrl?: string): NxipClientOptions {
+export function resolveClientOptions(flagApiKey?: string, flagUrl?: string, flagOrganization?: string): NxipClientOptions {
   const apiKey = (flagApiKey || process.env.NXIP_API_KEY || '').trim();
   const baseUrl = (flagUrl || process.env.NXIP_URL || 'https://nxip.dev').replace(/\/+$/, '');
-  return { apiKey, baseUrl };
+  const organizationId = (flagOrganization || process.env.NXIP_ORGANIZATION || '').trim();
+  return { apiKey, baseUrl, ...(organizationId ? { organizationId } : {}) };
 }
 
 export class NxipApiError extends Error {
@@ -90,6 +114,10 @@ async function request<T>(
     headers: {
       'content-type': 'application/json',
       [API_KEY_HEADER]: options.apiKey,
+      // Sent only when a customer organization was actually resolved, never
+      // as an empty string: an empty header would ask the API to act on
+      // behalf of "" rather than leaving the caller's own organization alone.
+      ...(options.organizationId ? { [ORGANIZATION_HEADER]: options.organizationId } : {}),
     },
     body: method === 'GET' ? undefined : JSON.stringify(body),
     signal: options.timeoutMs ? AbortSignal.timeout(options.timeoutMs) : undefined,
@@ -273,4 +301,49 @@ export function search(options: NxipClientOptions, q: string, limit?: number): P
 /** GET /v1/organizations/usage */
 export function getUsage(options: NxipClientOptions): Promise<NxipUsage> {
   return request(options, '/v1/organizations/usage', undefined, 'GET');
+}
+
+/**
+ * True if the key's own organization has at least one customer, i.e. it
+ * could act on behalf of someone if --organization/NXIP_ORGANIZATION were
+ * set. `limit=1` is all this needs: it only ever asks "any at all?", never
+ * "how many?" or "which ones?". Never opted in to x-nxip-organization on the
+ * API side (docs/specs/msp-tenancy-phase1.md), which is fine here since this
+ * is only ever called when organizationId is unset, so options never carries
+ * a header for this call to send.
+ *
+ * Used only to decide whether to print the "Target: your own organization"
+ * line (see resolveTargetLine below) - never to gate a request, since acting
+ * on behalf is resolved by the API itself, not guessed at here.
+ */
+export async function hasCustomerOrganizations(options: NxipClientOptions): Promise<boolean> {
+  const response = await request<{ data: unknown[] }>(options, '/v1/organizations/children?limit=1', undefined, 'GET');
+  return (response.data ?? []).length > 0;
+}
+
+/**
+ * The line plan, apply and mcp each print to say which organization a run
+ * targets (docs/specs/msp-tenancy-phase2.md Part C). Centralized here
+ * because all three need the exact same rule, not just the same words:
+ *
+ * - organizationId set: always names it, with no network call.
+ * - organizationId unset: one best-effort call decides whether the key's
+ *   own organization has customers. If it does, the line points at
+ *   --organization; if it does not, or the call fails for any reason
+ *   (wrong role, network error, timeout), undefined is returned and nothing
+ *   is printed. This check is advisory only and must never block or fail a
+ *   plan, apply or mcp startup - hence the blanket catch.
+ */
+export async function resolveTargetLine(options: NxipClientOptions): Promise<string | undefined> {
+  if (options.organizationId) {
+    return `Target: customer organization ${options.organizationId}`;
+  }
+  try {
+    if (await hasCustomerOrganizations(options)) {
+      return 'Target: your own organization. Pass --organization to manage a customer.';
+    }
+  } catch {
+    // Advisory only: a failed check prints nothing, same as no customers.
+  }
+  return undefined;
 }
