@@ -53,9 +53,11 @@ function byAddress(a: { cidr: string }, b: { cidr: string }): number {
 /**
  * Nests subnets under their pools and parents.
  *
- * A subnet goes under its pool by ipPoolId, not by environment and region:
- * two pools can share those, and a subnet drawn in the wrong pool's range
- * would put its space in the wrong place. One whose parent is missing from
+ * A subnet goes under its pool by ipPoolId, not by environment and region.
+ * The API allows one pool per environment, region and family, but that is
+ * a check in the route, not a database constraint (only the CIDR is), and
+ * ipPoolId is the one field that says for certain which range a subnet is
+ * drawn in. One whose parent is missing from
  * the read is shown at the top of its pool rather than dropped, since
  * dropping it would draw its space as free.
  *
