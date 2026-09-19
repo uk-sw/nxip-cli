@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { createMcpServer, PROPOSAL_TOOL_NAMES, READ_TOOL_NAMES, WRITE_TOOL_NAMES } from '../src/mcp.js';
+import { approvalLocation, createMcpServer, PROPOSAL_TOOL_NAMES, READ_TOOL_NAMES, WRITE_TOOL_NAMES } from '../src/mcp.js';
 import { describeKey } from '../src/client.js';
 
 // Agent change proposals (docs/specs/agent-change-proposals.md), the MCP
@@ -122,7 +122,9 @@ describe('mcp server with change proposals', () => {
     const { tools } = await (await connect({ readOnly: false, proposalOnly: true })).listTools();
     const description = tools.find((t) => t.name === 'propose_changes')?.description ?? '';
     expect(description).toMatch(/give a reason/i);
-    expect(description).toContain('https://app.nx-ip.com/proposals');
+    // A test API, not production, so the dashboard is named rather than linked.
+    expect(description).toContain('the Proposals page of your nxip dashboard');
+    expect(description).not.toContain('app.nx-ip.com');
     expect(tools.find((t) => t.name === 'propose_changes')?.annotations).toEqual({
       readOnlyHint: false,
       destructiveHint: false,
@@ -146,7 +148,7 @@ describe('mcp server with change proposals', () => {
     const [summary, json] = texts(result);
     expect(summary).toBe(
       'Proposed 2 changes as proposal prop_1: create subnet 10.20.4.0/24 in pool prod-eu; allocate 10.20.4.10 in subnet app. ' +
-        `Nothing has changed yet. A person must approve it at https://app.nx-ip.com/proposals before ${TS}.`
+        `Nothing has changed yet. A person must approve it at the Proposals page of your nxip dashboard before ${TS}.`
     );
     expect(JSON.parse(json)).toEqual(proposal);
   });
@@ -338,4 +340,53 @@ describe('nxip mcp --organization with a proposal-only key, over stdio', () => {
 
     expect(stderr).toContain('proposal-only key: direct write tools not registered');
   }, 30_000);
+});
+
+describe('approvalLocation', () => {
+  it('links app.nx-ip.com only for the production API', () => {
+    expect(approvalLocation({ baseUrl: 'https://nxip.dev' })).toBe('https://app.nx-ip.com/proposals');
+    expect(approvalLocation({ baseUrl: 'http://localhost:3000' })).toBe('the Proposals page of your nxip dashboard');
+  });
+
+  it('tells the user to switch to the customer when acting for one', () => {
+    expect(approvalLocation({ baseUrl: 'https://nxip.dev', organizationId: 'org_customer' })).toBe(
+      'https://app.nx-ip.com/proposals (after switching to acting for customer organization org_customer, since the proposal is in that organization)'
+    );
+  });
+});
+
+describe('propose_changes summary: kind, description and metadata (amendment 9)', () => {
+  beforeEach(() => vi.stubGlobal('fetch', vi.fn()));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('names a kind-tagged subnet as such, with its description and metadata, and the production link', async () => {
+    const structural = {
+      ...proposal,
+      operations: [
+        {
+          type: 'create_subnet',
+          input: {},
+          preview: {
+            subnet: { cidr: '10.20.8.0/22', kind: 'vpc', description: 'Shared services', metadata: { team: 'net' } },
+            container: { type: 'pool', name: 'prod-eu', cidr: '10.20.0.0/16' },
+          },
+          result: null,
+        },
+        {
+          type: 'create_pool',
+          input: {},
+          preview: { pool: { cidr: '10.30.0.0/16', name: 'prod-us', metadata: { owner: 'ops' } } },
+          result: null,
+        },
+      ],
+    };
+    (fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(jsonResponse(structural, 201));
+    const client = await connect({ readOnly: false, proposalOnly: true }, { apiKey: API_KEY, baseUrl: 'https://nxip.dev' });
+    const result = await call(client, 'propose_changes', PROPOSE_ARGS);
+    expect(texts(result)[0]).toBe(
+      'Proposed 2 changes as proposal prop_1: create vpc subnet 10.20.8.0/22 in pool prod-eu [kind vpc; description "Shared services"; metadata team=net]; ' +
+        'create pool 10.30.0.0/16 (prod-us) [metadata owner=ops]. ' +
+        `Nothing has changed yet. A person must approve it at https://app.nx-ip.com/proposals before ${TS}.`
+    );
+  });
 });

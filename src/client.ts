@@ -73,9 +73,12 @@ const ORGANIZATION_HEADER = 'x-nxip-organization';
  * organization was given, and so request() below can tell "set" from
  * "unset" with a single truthiness check.
  */
+/** The production API, used when neither --url nor NXIP_URL is given. */
+export const DEFAULT_BASE_URL = 'https://nxip.dev';
+
 export function resolveClientOptions(flagApiKey?: string, flagUrl?: string, flagOrganization?: string): NxipClientOptions {
   const apiKey = (flagApiKey || process.env.NXIP_API_KEY || '').trim();
-  const baseUrl = (flagUrl || process.env.NXIP_URL || 'https://nxip.dev').replace(/\/+$/, '');
+  const baseUrl = (flagUrl || process.env.NXIP_URL || DEFAULT_BASE_URL).replace(/\/+$/, '');
   const organizationId = (flagOrganization || process.env.NXIP_ORGANIZATION || '').trim();
   return { apiKey, baseUrl, ...(organizationId ? { organizationId } : {}) };
 }

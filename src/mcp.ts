@@ -21,6 +21,7 @@ import {
   previewSubnet,
   proposeChanges,
   resolveTargetLine,
+  DEFAULT_BASE_URL,
   search,
   type NxipClientOptions,
 } from './client.js';
@@ -183,9 +184,23 @@ const proposalOperation = z.discriminatedUnion('type', [
   z.object({ type: z.literal('allocate_address'), input: addressRequest }).strict(),
 ]);
 
-// Where a person approves. Named in the tool descriptions and in every
+// Where a person approves. Named in the tool description and in every
 // propose_changes result, because the agent has to tell the user where to go.
-const APPROVAL_URL = 'https://app.nx-ip.com/proposals';
+const PRODUCTION_APPROVAL_URL = 'https://app.nx-ip.com/proposals';
+
+/**
+ * Where to send the user, for this server's API. The app.nx-ip.com link is
+ * only right for the production API: against a local or self-hosted one it
+ * would point at a dashboard that has never heard of the proposal. And a
+ * proposal made for a customer lives in that customer, so the user only
+ * sees it after switching to acting for them.
+ */
+export function approvalLocation(options: Pick<NxipClientOptions, 'baseUrl' | 'organizationId'>): string {
+  const page = options.baseUrl === DEFAULT_BASE_URL ? PRODUCTION_APPROVAL_URL : 'the Proposals page of your nxip dashboard';
+  return options.organizationId
+    ? `${page} (after switching to acting for customer organization ${options.organizationId}, since the proposal is in that organization)`
+    : page;
+}
 
 // ==========================================
 // Results
@@ -357,15 +372,38 @@ export const WRITE_TOOL_NAMES = ['create_pool', 'create_subnet', 'allocate_addre
 // proposal-only key. Not a read either, so --read-only leaves it out.
 export const PROPOSAL_TOOL_NAMES = ['propose_changes'] as const;
 
-/** One line per operation, in the words the approval screen uses. */
+/**
+ * Kind, description and metadata of what an operation writes, in brackets,
+ * or nothing. Approvers see these on the approval screen (amendment 9 of
+ * docs/specs/agent-change-proposals.md), so the agent's summary shows them
+ * too, and the user hears the same thing from both.
+ */
+function operationDetails(resource: Record<string, any> | undefined): string {
+  if (!resource) return '';
+  const details: string[] = [];
+  if (resource.kind) details.push(`kind ${resource.kind}`);
+  if (resource.description) details.push(`description "${resource.description}"`);
+  const metadata = resource.metadata && typeof resource.metadata === 'object' ? Object.entries(resource.metadata) : [];
+  if (metadata.length > 0) details.push(`metadata ${metadata.map(([key, value]) => `${key}=${String(value)}`).join(', ')}`);
+  return details.length > 0 ? ` [${details.join('; ')}]` : '';
+}
+
+/**
+ * One line per operation, in the words the approval screen uses. The kind
+ * is in the sentence itself: a kind-tagged subnet changes where later
+ * automatic allocations land, so it must never read like a plain one.
+ */
 function describeOperation(operation: NxipProposal['operations'][number]): string {
   const preview = operation.preview as Record<string, any>;
-  if (operation.type === 'create_pool') return `create pool ${preview.pool?.cidr} (${preview.pool?.name})`;
+  if (operation.type === 'create_pool') {
+    return `create pool ${preview.pool?.cidr} (${preview.pool?.name})${operationDetails(preview.pool)}`;
+  }
   if (operation.type === 'create_subnet') {
     const container = preview.container ?? {};
-    return `create subnet ${preview.subnet?.cidr} in ${container.type} ${container.name ?? container.cidr}`;
+    const kind = preview.subnet?.kind ? `${preview.subnet.kind} ` : '';
+    return `create ${kind}subnet ${preview.subnet?.cidr} in ${container.type} ${container.name ?? container.cidr}${operationDetails(preview.subnet)}`;
   }
-  return `allocate ${preview.address?.address} in subnet ${preview.subnet?.name ?? preview.subnet?.cidr}`;
+  return `allocate ${preview.address?.address} in subnet ${preview.subnet?.name ?? preview.subnet?.cidr}${operationDetails(preview.address)}`;
 }
 
 /**
@@ -660,7 +698,7 @@ export function createMcpServer(client: NxipClientOptions, { readOnly, proposalO
         'address), and on approval creates exactly that, all or nothing. If any operation would fail, nothing is ' +
         'proposed and the error says which and why. Always give a reason that explains to the person approving ' +
         'why these changes are needed. Afterwards, tell the user the proposal id and that it must be approved at ' +
-        `${APPROVAL_URL} within 24 hours. Operations are checked against what exists now, so they cannot build on ` +
+        `${approvalLocation(options)} within 24 hours. Operations are checked against what exists now, so they cannot build on ` +
         'one another (a subnet in a pool the same proposal creates); propose the pool first and the subnet once ' +
         'it is approved. Requires an API key with the MEMBER role or above.',
       inputSchema: z.object({
@@ -680,7 +718,7 @@ export function createMcpServer(client: NxipClientOptions, { readOnly, proposalO
         (proposal) =>
           `Proposed ${plural(proposal.operations.length, 'change')} as proposal ${proposal.id}: ` +
           `${proposal.operations.map(describeOperation).join('; ')}. Nothing has changed yet. ` +
-          `A person must approve it at ${APPROVAL_URL} before ${proposal.expiresAt}.`,
+          `A person must approve it at ${approvalLocation(options)} before ${proposal.expiresAt}.`,
         { what: 'proposal', checkWith: 'list_proposals' }
       )
   );
