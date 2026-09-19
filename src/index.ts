@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { readFileSync, writeFileSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
-import { resolveClientOptions, resolveTargetLine, listPools } from './client.js';
+import { resolveClientOptions, resolveTargetLine, listPools, listAllPoolDetails, listAllSubnets } from './client.js';
 import { ManifestError, parseFullManifest, type Manifest } from './manifest.js';
 import { formatPlan, planManifest, planPools, formatPoolPlan, annotateAgainstPools, formatAnnotatedPlan, formatNestedEntries, findCrossPoolOverlaps, formatCrossPoolOverlaps } from './plan.js';
 import { applyFullManifest, formatApplyResults } from './apply.js';
@@ -12,6 +12,7 @@ import { discoverAzure, AzureScanError } from './azure.js';
 import { analyseDiscovery, formatScanReport, renderDiscoveryManifest, mergeDiscoveries, redactDiscovery, type Discovery } from './scan.js';
 import { DEFAULT_SHARED_RANGES, parseSharedRanges, SharedRangeError } from './shared-ranges.js';
 import { findUnknownMcpArgument } from './mcp-args.js';
+import { buildTree, formatTree, PoolSelectionError, selectPool, shouldUseColor } from './tree.js';
 
 interface ParsedArgs {
   command: string;
@@ -36,6 +37,10 @@ interface ParsedArgs {
   allSubscriptions: boolean;
   failOnOverlap: boolean;
   readOnly: boolean;
+  /** tree only. */
+  pool?: string;
+  depth?: string;
+  free: boolean;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -53,6 +58,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     allSubscriptions: false,
     failOnOverlap: false,
     readOnly: false,
+    free: false,
   };
 
   // `scan` takes one or more providers as leading positionals, so
@@ -103,6 +109,12 @@ function parseArgs(argv: string[]): ParsedArgs {
       args.failOnOverlap = true;
     } else if (arg === '--read-only') {
       args.readOnly = true;
+    } else if (arg === '--pool') {
+      args.pool = rest[++i];
+    } else if (arg === '--depth') {
+      args.depth = rest[++i];
+    } else if (arg === '--free') {
+      args.free = true;
     }
   }
 
@@ -150,8 +162,10 @@ function printUsage(stream: 'out' | 'err' = 'err') {
   write(`       ${CLI} scaffold -f <site.yaml> [-o <manifest.yaml>]`);
   write(`       ${CLI} <plan|apply> -f <manifest.yaml> [--api-key KEY] [--url URL] [--organization ID] [--auto-approve]`);
   write(`       ${CLI} mcp [--read-only] [--organization ID]   MCP server on stdio, for AI agents (needs NXIP_API_KEY)`);
+  write(`       ${CLI} tree [--pool ID|NAME] [--depth N] [--free] [--json] [--organization ID]`);
+  write('                     every pool with its subnets nested beneath it; --free adds free space');
   write('');
-  write('--organization ID (or NXIP_ORGANIZATION) manages a customer organization instead');
+  write('--organization ID (or NXIP_ORGANIZATION) manages or reads a customer organization instead');
   write('of the API key\'s own. Unset means the key\'s own organization, as before.');
   write('');
   write('Both providers scan everything by default: every AWS region, every Azure');
@@ -161,7 +175,7 @@ function printUsage(stream: 'out' | 'err' = 'err') {
   write('this machine. It never contacts nxip. To compare against what your nxip');
   write(`organization already holds, use \`${CLI} plan -f <manifest.yaml>\` instead.`);
   write('');
-  write('scan and scaffold need no nxip account. plan, apply and mcp need an API key.');
+  write('scan and scaffold need no nxip account. plan, apply, tree and mcp need an API key.');
   write('Docs: https://nx-ip.com/docs/nxip-cli');
 }
 
@@ -186,7 +200,7 @@ async function listPoolsQuietly(options: Parameters<typeof listPools>[0]) {
   }
 }
 
-const COMMANDS = new Set(['scan', 'scaffold', 'plan', 'apply', 'mcp']);
+const COMMANDS = new Set(['scan', 'scaffold', 'plan', 'apply', 'mcp', 'tree']);
 
 
 async function main() {
@@ -428,6 +442,25 @@ async function main() {
     }
   }
 
+  // Also before the API-key gate, for the same reason as mcp above: a typo
+  // in --depth is a typo, and "missing API key" would hide it.
+  // Given without a value, the general parser would swallow the next flag
+  // as the value (`--pool --free`) or leave it unset, and either way the
+  // tree would quietly show something other than what was asked for.
+  if (args.command === 'tree') {
+    const given = process.argv.slice(3);
+    if (given.includes('--depth') && !/^\d+$/.test(args.depth ?? '')) {
+      console.error(`--depth needs a whole number of levels, 0 or more (got "${args.depth ?? ''}").`);
+      process.exitCode = 1;
+      return;
+    }
+    if (given.includes('--pool') && (!args.pool || args.pool.startsWith('-'))) {
+      console.error('--pool needs a pool id or exact pool name.');
+      process.exitCode = 1;
+      return;
+    }
+  }
+
   const options = resolveClientOptions(args.apiKey, args.url, args.organization);
 
   if (!options.apiKey) {
@@ -445,6 +478,43 @@ async function main() {
     // for it. A static import made every one of them slower to start.
     const { runMcpServer } = await import('./mcp.js');
     await runMcpServer(options, { readOnly: args.readOnly });
+    return;
+  }
+
+  if (args.command === 'tree') {
+    // The same target line as plan and apply, first. With --json it goes to
+    // stderr instead, the way mcp prints it: stdout is then a document for
+    // a program to parse, and a line of prose ahead of it would break that.
+    const targetLine = await resolveTargetLine(options);
+    if (targetLine) (args.json ? console.error : console.log)(targetLine);
+
+    const depth = args.depth === undefined ? undefined : Number(args.depth);
+    // Pools only at --depth 0, so there is no reason to read every subnet.
+    const [allPools, subnets] = await Promise.all([
+      listAllPoolDetails(options),
+      depth === 0 ? Promise.resolve([]) : listAllSubnets(options),
+    ]);
+
+    let pools = allPools;
+    if (args.pool) {
+      try {
+        pools = [selectPool(allPools, args.pool)];
+      } catch (error) {
+        if (!(error instanceof PoolSelectionError)) throw error;
+        console.error(error.message);
+        process.exitCode = 1;
+        return;
+      }
+    }
+
+    const tree = buildTree(pools, subnets, { free: args.free, depth });
+    if (args.json) {
+      process.stdout.write(`${JSON.stringify({ pools: tree }, null, 2)}\n`);
+    } else if (tree.length === 0) {
+      console.log(`No pools yet. Create one in the dashboard, or declare one in a manifest and run: ${CLI} apply -f <manifest.yaml>`);
+    } else {
+      process.stdout.write(formatTree(tree, { color: shouldUseColor(process.stdout.isTTY, process.env) }));
+    }
     return;
   }
 
