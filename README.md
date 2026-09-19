@@ -377,7 +377,7 @@ Terraform), then creates whatever the plan predicted would succeed. Pass
 
 If your nxip organization is a provider managing customers (see
 [Customer organizations](https://nx-ip.com/docs/customer-organizations)),
-`plan`, `apply` and `mcp` all take `--organization <id>`, or the
+`plan`, `apply`, `tree` and `mcp` all take `--organization <id>`, or the
 `NXIP_ORGANIZATION` environment variable, to act on a customer instead of
 your own organization. A flag always wins over the environment variable.
 
@@ -423,6 +423,46 @@ alongside the server's usual startup diagnostic:
   }
 }
 ```
+
+## Seeing the whole plan (`nxip tree`)
+
+`nxip tree` prints every pool with its subnets nested beneath it, in address
+order, the way `tree` prints a directory. Add `--free` to see what is still
+unallocated at each level:
+
+```bash
+npx nxip-cli tree --free
+```
+
+```
+Production US-East  10.109.0.0/16  production / us-east-1  6% used
+├── 10.109.0.0/20  us-east-1 region block [region]
+│   ├── 10.109.0.0/24  Payments team
+│   │   ├── 10.109.0.0/27   Payments AZ-b [az-subnet]
+│   │   ├── 10.109.0.32/27  Payments AZ-a [az-subnet]
+│   │   └── free 10.109.0.64/26, 10.109.0.128/25
+│   └── free 10.109.1.0/24, 10.109.2.0/23, 10.109.4.0/22, 10.109.8.0/21
+└── free 10.109.16.0/20, 10.109.32.0/19, 10.109.64.0/18, 10.109.128.0/17
+```
+
+Each line is a CIDR, its name and `[kind]`; a pool line adds its
+environment, region and how much of it is allocated. Free space is listed as
+the fewest aligned blocks that cover it, so each one is a CIDR you could
+actually allocate. A `free` line shows at most 8 blocks, then `+N more`.
+
+| Flag | What it does |
+|---|---|
+| `--pool <id or name>` | One pool only. A name must match exactly; if two pools share it, the command stops and lists their ids |
+| `--depth <n>` | Levels of subnets to show under each pool. `0` is pools only |
+| `--free` | Adds a `free` line under every level that has subnets |
+| `--json` | The same tree as nested JSON, with every free block rather than the first 8 |
+| `--organization <id>` | A customer organization's tree, as on `plan` and `apply` |
+
+It reads every page of pools and subnets before drawing anything, since a
+tree missing a subnet would show that subnet's space as free. Colour and a
+small usage bar appear only on a terminal: piped output, and any run with
+`NO_COLOR` set, is plain text. With `--json`, the `Target:` line goes to
+stderr so stdout stays valid JSON.
 
 ## Scaffolding a new site (`nxip scaffold`)
 
