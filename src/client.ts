@@ -167,40 +167,74 @@ export function createPool(options: NxipClientOptions, body: NxipPoolBody): Prom
 const MAX_POOL_PAGES = 100;
 
 /**
- * Lists existing pools so a plan can distinguish "will be created" from
- * "already there". There is no pool preview endpoint, so this read is the
- * only way to say anything truthful about a pool before applying it.
+ * Reads every page of a paginated list route, 100 at a time.
+ *
+ * Deliberately not the GUI's fetchAllPages, which stops silently at a
+ * maxPages ceiling. A dashboard showing 1,000 of 1,200 pools is merely
+ * incomplete; plan and apply reading 1,000 of 1,200 would report "will
+ * create" for a pool that exists and skip overlap checks against the rest,
+ * and a tree missing subnets would draw their space as free. So the ceiling
+ * throws rather than truncates: wrong loudly beats wrong quietly.
  */
-export async function listPools(options: NxipClientOptions): Promise<NxipPool[]> {
-  const pools: NxipPool[] = [];
+async function readAllPages<T>(options: NxipClientOptions, path: string, tooMany: string): Promise<T[]> {
+  const items: T[] = [];
   let page = 1;
 
-  // Deliberately not the GUI's fetchAllPages, which stops silently at a
-  // maxPages ceiling. A dashboard showing 1,000 of 1,200 pools is merely
-  // incomplete; plan and apply reading 1,000 of 1,200 would report "will
-  // create" for a pool that exists and skip overlap checks against the rest,
-  // which is the failure this pagination is here to prevent. So the ceiling
-  // throws rather than truncates: wrong loudly beats wrong quietly.
   while (page <= MAX_POOL_PAGES) {
-    const response = await request<{ data: NxipPool[]; meta?: { totalPages?: number } }>(
+    const response = await request<{ data: T[]; meta?: { totalPages?: number } }>(
       options,
-      `/v1/pools?limit=100&page=${page}`,
+      `${path}?limit=100&page=${page}`,
       undefined,
       'GET'
     );
-    pools.push(...(response.data ?? []));
+    items.push(...(response.data ?? []));
 
     const totalPages = response.meta?.totalPages;
     // An API that stops reporting totalPages must not silently become a
     // single-page read again, which is the bug this replaces.
     if (typeof totalPages !== 'number') break;
-    if (page >= totalPages) return pools;
+    if (page >= totalPages) return items;
     page += 1;
   }
 
-  throw new NxipApiError(
-    0,
+  throw new NxipApiError(0, tooMany);
+}
+
+/**
+ * Lists existing pools so a plan can distinguish "will be created" from
+ * "already there". There is no pool preview endpoint, so this read is the
+ * only way to say anything truthful about a pool before applying it.
+ */
+export function listPools(options: NxipClientOptions): Promise<NxipPool[]> {
+  return readAllPages<NxipPool>(
+    options,
+    '/v1/pools',
     `This organization has more than ${MAX_POOL_PAGES * 100} pools, which nxip cannot read in one plan. ` +
+      'Please open an issue: this limit is arbitrary and can be raised.'
+  );
+}
+
+/**
+ * Every pool with its utilization, and every subnet, for `nxip tree`. Both
+ * are complete reads: a tree drawn from the first page would show real
+ * subnets as free space, which is a wrong answer rather than a short one.
+ * GET /v1/subnets has no pool filter, so the tree reads the whole
+ * organization once and groups by ipPoolId itself.
+ */
+export function listAllPoolDetails(options: NxipClientOptions): Promise<NxipPoolDetail[]> {
+  return readAllPages<NxipPoolDetail>(
+    options,
+    '/v1/pools',
+    `This organization has more than ${MAX_POOL_PAGES * 100} pools, which nxip cannot read in one tree. ` +
+      'Please open an issue: this limit is arbitrary and can be raised.'
+  );
+}
+
+export function listAllSubnets(options: NxipClientOptions): Promise<NxipSubnet[]> {
+  return readAllPages<NxipSubnet>(
+    options,
+    '/v1/subnets',
+    `This organization has more than ${MAX_POOL_PAGES * 100} subnets, which nxip cannot read in one tree. ` +
       'Please open an issue: this limit is arbitrary and can be raised.'
   );
 }
