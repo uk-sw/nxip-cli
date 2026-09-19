@@ -5,11 +5,15 @@ import type {
   NxipAddress,
   NxipAddressBody,
   NxipCreatedSubnet,
+  NxipKeySelf,
   NxipLookupResult,
   NxipPool,
   NxipPoolBody,
   NxipPoolDetail,
   NxipPoolForecast,
+  NxipProposal,
+  NxipProposalOperation,
+  NxipProposalStatus,
   NxipSearchResult,
   NxipSubnet,
   NxipSubnetBody,
@@ -103,6 +107,24 @@ function withIssues(message: string, issues: unknown): string {
   return `${message.replace(/\.$/, '')}: ${details}`;
 }
 
+/**
+ * POST /v1/proposals answers 422 with one outcome per operation, and only
+ * those outcomes say what to change: the top-level message just counts
+ * failures. Folded into the message for the same reason as withIssues, so
+ * an agent sees "operation 2 (create_subnet): no-pool: ..." and can fix it.
+ */
+function withOperationOutcomes(message: string, operations: unknown): string {
+  if (!Array.isArray(operations)) return message;
+  const failed = operations
+    .map((outcome) => (outcome ?? {}) as { index?: unknown; type?: unknown; wouldSucceed?: unknown; reason?: unknown; message?: unknown })
+    .filter((outcome) => outcome.wouldSucceed === false)
+    .map((outcome) => {
+      const position = typeof outcome.index === 'number' ? `operation ${outcome.index + 1}` : 'an operation';
+      return `${position} (${String(outcome.type)}): ${String(outcome.reason)}: ${String(outcome.message)}`;
+    });
+  return failed.length > 0 ? `${message} ${failed.join(' ')}` : message;
+}
+
 async function request<T>(
   options: NxipClientOptions,
   path: string,
@@ -134,7 +156,10 @@ async function request<T>(
   if (!response.ok) {
     const message =
       parsed && typeof parsed === 'object' && 'message' in parsed
-        ? withIssues(String((parsed as { message: unknown }).message), (parsed as { issues?: unknown }).issues)
+        ? withOperationOutcomes(
+            withIssues(String((parsed as { message: unknown }).message), (parsed as { issues?: unknown }).issues),
+            (parsed as { operations?: unknown }).operations
+          )
         : text || `nxip API returned unexpected status ${response.status}`;
     throw new NxipApiError(response.status, message);
   }
@@ -380,4 +405,38 @@ export async function resolveTargetLine(options: NxipClientOptions): Promise<str
     // Advisory only: a failed check prints nothing, same as no customers.
   }
   return undefined;
+}
+
+/**
+ * GET /v1/api-keys/self: what the calling key is allowed to do.
+ *
+ * Always sent without x-nxip-organization, even when an organization is
+ * set. The route describes the key, which belongs to its own organization
+ * whatever it is acting on, and like every API key route it answers 400 to
+ * the header (docs/specs/agent-change-proposals.md, amendment 4).
+ */
+export function describeKey(options: NxipClientOptions): Promise<NxipKeySelf> {
+  const { organizationId: _ignored, ...ownOrganization } = options;
+  return request(ownOrganization, '/v1/api-keys/self', undefined, 'GET');
+}
+
+/** POST /v1/proposals. Creates nothing but the proposal; a person approves it. */
+export function proposeChanges(
+  options: NxipClientOptions,
+  body: { reason?: string; operations: NxipProposalOperation[] }
+): Promise<NxipProposal> {
+  return request(options, '/v1/proposals', body);
+}
+
+/** GET /v1/proposals/:id */
+export function getProposal(options: NxipClientOptions, id: string): Promise<NxipProposal> {
+  return request(options, `/v1/proposals/${segment(id)}`, undefined, 'GET');
+}
+
+/** GET /v1/proposals, one page. */
+export function listProposals(
+  options: NxipClientOptions,
+  query: PageQuery & { status?: NxipProposalStatus } = {}
+): Promise<ApiPage<NxipProposal>> {
+  return request(options, withQuery('/v1/proposals', { ...query }), undefined, 'GET');
 }

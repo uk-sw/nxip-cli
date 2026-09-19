@@ -250,3 +250,50 @@ export interface NxipUsage {
     seats: NxipMetricUsage;
   };
 }
+
+// apiKeys.ts getSelfApiKeySchema: the calling key, and only it.
+export interface NxipKeySelf {
+  name: string;
+  keyPrefix: string;
+  role: 'OWNER' | 'ADMIN' | 'MEMBER' | 'READ_ONLY';
+  proposalOnly: boolean;
+}
+
+// proposals.ts: one operation of a change proposal, as sent.
+export type NxipProposalOperation =
+  | { type: 'create_pool'; input: NxipPoolBody }
+  | { type: 'create_subnet'; input: NxipSubnetBody }
+  | { type: 'allocate_address'; input: NxipAddressBody & { subnetId: string } };
+
+export type NxipProposalStatus = 'PENDING' | 'APPROVED' | 'REJECTED' | 'FAILED' | 'EXPIRED';
+
+// proposals.ts attributionSchema, after the API's audit read rule.
+export interface NxipProposalActor {
+  organizationId: string | null;
+  organizationName: string | null;
+  label: string | null;
+  apiKeyId: string | null;
+  userId?: string | null;
+}
+
+// proposals.ts proposalSchema. `preview` is the pinned result approval will
+// create: { pool }, the /v1/subnets/preview success body, or { address, subnet }.
+export interface NxipProposal {
+  id: string;
+  organizationId: string;
+  status: NxipProposalStatus;
+  reason: string | null;
+  operations: {
+    type: NxipProposalOperation['type'];
+    input: Record<string, unknown>;
+    preview: Record<string, unknown>;
+    result: { id: string } | null;
+  }[];
+  proposedBy: NxipProposalActor;
+  decidedBy: NxipProposalActor | null;
+  decisionNote: string | null;
+  failure: Record<string, unknown> | null;
+  expiresAt: string;
+  createdAt: string;
+  decidedAt: string | null;
+}

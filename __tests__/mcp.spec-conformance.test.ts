@@ -35,6 +35,12 @@ const SPEC_TABLE = [
   { tool: 'create_pool', method: 'POST', path: '/v1/pools', kind: 'write' },
   { tool: 'create_subnet', method: 'POST', path: '/v1/subnets', kind: 'write' },
   { tool: 'allocate_address', method: 'POST', path: '/v1/subnets/:id/addresses', kind: 'write' },
+  // Added by docs/specs/agent-change-proposals.md. propose_changes is its
+  // own kind: it writes a proposal, never address space, so it is neither
+  // hidden for a proposal-only key nor offered under --read-only.
+  { tool: 'get_proposal', method: 'GET', path: '/v1/proposals/:id', kind: 'read' },
+  { tool: 'list_proposals', method: 'GET', path: '/v1/proposals', kind: 'read' },
+  { tool: 'propose_changes', method: 'POST', path: '/v1/proposals', kind: 'proposal' },
 ] as const;
 
 const ALL_TOOLS = SPEC_TABLE.map((row) => row.tool).sort();
@@ -64,6 +70,9 @@ const ROUTE_FIELDS: Record<string, string[]> = {
   create_pool: ['name', 'cidr', 'family', 'environment', 'region', 'metadata'],
   create_subnet: SUBNET_BODY_FIELDS,
   allocate_address: ['subnetId', 'address', 'status', 'hostname', 'metadata'],
+  get_proposal: ['id'],
+  list_proposals: ['status', 'page', 'limit'],
+  propose_changes: ['reason', 'operations'],
 };
 
 // Fields the routes cannot do without (non-optional in their Zod schemas).
@@ -77,6 +86,8 @@ const ROUTE_REQUIRED: Record<string, string[]> = {
   create_subnet: ['family'],
   create_pool: ['name', 'cidr', 'family', 'environment', 'region'],
   allocate_address: ['subnetId', 'address'],
+  get_proposal: ['id'],
+  propose_changes: ['operations'],
 };
 
 const TS = '2026-09-01T10:00:00.000Z';
@@ -93,6 +104,16 @@ const addressRecord = {
   metadata: {}, createdAt: TS, updatedAt: TS,
 };
 const page = { total: 1, page: 1, limit: 20, totalPages: 1 };
+const proposalRecord = {
+  id: 'prop_3', organizationId: 'org_1', status: 'PENDING', reason: 'New payments service',
+  operations: [{
+    type: 'create_subnet', input: { family: 'IPV4', prefixLength: 24, environment: 'production', region: 'eu-west-1' },
+    preview: { wouldSucceed: true, subnet: { cidr: '10.20.4.0/24' }, container: { type: 'pool', id: 'pool_7', name: 'prod-eu', cidr: '10.20.0.0/16' } },
+    result: null,
+  }],
+  proposedBy: { organizationId: null, organizationName: null, label: 'agent', apiKeyId: 'key_1' },
+  decidedBy: null, decisionNote: null, failure: null, expiresAt: TS, createdAt: TS, decidedAt: null,
+};
 const metric = { current: 1, limit: 10, percentageUsed: 10, isUnlimited: false, isOverLimit: false };
 
 interface Case {
@@ -188,6 +209,21 @@ const CASES: Case[] = [
     body: { address: '10.20.4.17', hostname: 'db-1' },
     status: 201, response: addressRecord,
   },
+  {
+    tool: 'get_proposal', args: { id: 'prop_3' }, method: 'GET', pathname: '/v1/proposals/prop_3', status: 200,
+    response: proposalRecord,
+  },
+  {
+    tool: 'list_proposals', args: { status: 'PENDING' }, method: 'GET', pathname: '/v1/proposals', query: { status: 'PENDING' }, status: 200,
+    response: { data: [proposalRecord], meta: page },
+  },
+  {
+    tool: 'propose_changes',
+    args: { reason: 'New payments service', operations: [{ type: 'create_subnet', input: { family: 'IPV4', prefixLength: 24, environment: 'production', region: 'eu-west-1' } }] },
+    method: 'POST', pathname: '/v1/proposals',
+    body: { reason: 'New payments service', operations: [{ type: 'create_subnet', input: { family: 'IPV4', prefixLength: 24, environment: 'production', region: 'eu-west-1' } }] },
+    status: 201, response: proposalRecord,
+  },
 ];
 
 function jsonResponse(body: unknown, status: number): Response {
@@ -276,11 +312,11 @@ describe('MCP server conformance to docs/specs/mcp-server.md', () => {
     expect(CASES.map((c) => c.tool).sort()).toEqual(ALL_TOOLS);
   });
 
-  describe('Done means 1: exactly the 13 tools', () => {
+  describe('Done means 1: exactly the 16 tools (13, plus three from agent-change-proposals.md)', () => {
     it('lists exactly the spec table names and nothing else', async () => {
       const { tools } = await (await connect()).listTools();
       expect(tools.map((t) => t.name).sort()).toEqual(ALL_TOOLS);
-      expect(tools).toHaveLength(13);
+      expect(tools).toHaveLength(16);
     });
 
     it('exposes no delete, update or release tool of any name', async () => {
@@ -290,10 +326,10 @@ describe('MCP server conformance to docs/specs/mcp-server.md', () => {
   });
 
   describe('Done means 2: --read-only', () => {
-    it('lists exactly the 10 read tools', async () => {
+    it('lists exactly the 12 read tools', async () => {
       const { tools } = await (await connect(true)).listTools();
       expect(tools.map((t) => t.name).sort()).toEqual(READ_TOOLS);
-      expect(tools).toHaveLength(10);
+      expect(tools).toHaveLength(12);
     });
 
     it('still lists preview_subnet, which is a read even though it is a POST', async () => {
@@ -720,7 +756,7 @@ describe('stdio process', () => {
     const messages = outLines.map((l) => JSON.parse(l) as { jsonrpc: string; id: number; result?: { isError?: boolean; tools?: unknown[] } });
     for (const m of messages) expect(m.jsonrpc).toBe('2.0');
     const byId = new Map(messages.map((m) => [m.id, m]));
-    expect(byId.get(2)?.result?.tools).toHaveLength(13);
+    expect(byId.get(2)?.result?.tools).toHaveLength(16);
     expect(byId.get(3)?.result?.isError).toBeFalsy();
     expect(byId.get(4)?.result?.isError).toBe(true);
     expect(byId.get(5)?.result?.isError).toBe(true);
@@ -731,7 +767,7 @@ describe('stdio process', () => {
     expect(stderr).not.toContain(STDIO_KEY);
   }, 30_000);
 
-  it('--read-only over stdio lists 10 tools, and a network failure names the URL but not the key', async () => {
+  it('--read-only over stdio lists 12 tools, and a network failure names the URL but not the key', async () => {
     // A port nothing listens on: bind, read the port, close.
     const probe = createServer();
     await new Promise<void>((resolve) => probe.listen(0, '127.0.0.1', resolve));

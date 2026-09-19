@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { createMcpServer, READ_TOOL_NAMES, WRITE_TOOL_NAMES } from '../src/mcp.js';
+import { createMcpServer, PROPOSAL_TOOL_NAMES, READ_TOOL_NAMES, WRITE_TOOL_NAMES } from '../src/mcp.js';
 
 // A realistic key, long enough to be scrubbed, and distinctive enough that
 // finding it anywhere in output can only mean it leaked.
@@ -255,12 +255,12 @@ describe('mcp server', () => {
     vi.restoreAllMocks();
   });
 
-  it('exposes exactly the 13 tools, with the right annotations', async () => {
+  it('exposes exactly the 16 tools, with the right annotations', async () => {
     const client = await connect();
     const { tools } = await client.listTools();
 
-    expect(tools.map((t) => t.name).sort()).toEqual([...READ_TOOL_NAMES, ...WRITE_TOOL_NAMES].sort());
-    expect(tools).toHaveLength(13);
+    expect(tools.map((t) => t.name).sort()).toEqual([...READ_TOOL_NAMES, ...PROPOSAL_TOOL_NAMES, ...WRITE_TOOL_NAMES].sort());
+    expect(tools).toHaveLength(16);
 
     for (const tool of tools) {
       if ((READ_TOOL_NAMES as readonly string[]).includes(tool.name)) {
@@ -278,7 +278,7 @@ describe('mcp server', () => {
   });
 
   describe('--read-only', () => {
-    it('lists only the 10 read tools', async () => {
+    it('lists only the 12 read tools', async () => {
       const client = await connect(true);
       const { tools } = await client.listTools();
       expect(tools.map((t) => t.name).sort()).toEqual([...READ_TOOL_NAMES].sort());

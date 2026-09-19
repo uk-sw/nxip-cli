@@ -117,18 +117,21 @@ describe('nxip mcp over stdio', () => {
     }
 
     const byId = new Map(stdoutLines.map((l) => JSON.parse(l)).map((m) => [m.id, m]));
-    expect(byId.get(2).result.tools).toHaveLength(13);
+    expect(byId.get(2).result.tools).toHaveLength(16);
     expect(byId.get(3).result.isError).toBeFalsy();
     expect(byId.get(4).result.isError).toBe(true);
     expect(byId.get(4).result.content[0].text).toContain("Nothing at /v1/pools/pool_missing");
     expect(byId.get(5).result.isError).toBe(true);
 
-    // Three requests reached the API: the startup organizations/children
+    // Four requests reached the API: the startup api-keys/self check (see
+    // runMcpServer, docs/specs/agent-change-proposals.md; this fake API
+    // answers it 404, like an API that predates the route, so the write
+    // tools are registered as before), the startup organizations/children
     // check (see resolveTargetLine, docs/specs/msp-tenancy-phase2.md Part
     // C), then list_pools and get_pool (the invalid create never made a
-    // request at all). All three carry the key, which then appears nowhere
+    // request at all). All four carry the key, which then appears nowhere
     // the process wrote.
-    expect(seenKeys).toEqual([API_KEY, API_KEY, API_KEY]);
+    expect(seenKeys).toEqual([API_KEY, API_KEY, API_KEY, API_KEY]);
     expect(result.stdout).not.toContain(API_KEY);
     expect(result.stderr).not.toContain(API_KEY);
     // Diagnostics did happen, on stderr.

@@ -6,21 +6,25 @@ import {
   createAddress,
   createPool,
   createSubnet,
+  describeKey,
   forecastPools,
   getPool,
+  getProposal,
   getSubnet,
   getUsage,
   listAddresses,
   listPoolsPage,
+  listProposals,
   listSubnets,
   lookupIp,
   NxipApiError,
   previewSubnet,
+  proposeChanges,
   resolveTargetLine,
   search,
   type NxipClientOptions,
 } from './client.js';
-import type { ApiPage, NxipMetricUsage } from './types.js';
+import type { ApiPage, NxipMetricUsage, NxipProposal } from './types.js';
 import { readVersion } from './version.js';
 
 /*
@@ -144,6 +148,44 @@ const subnetRequest = z
       });
     }
   });
+
+// pools.ts createPoolSchema.body. Shared by create_pool and the create_pool
+// operation of propose_changes, so the two cannot accept different things.
+const poolRequest = z
+  .object({
+    name: z.string().min(1).describe('Human-readable pool name.'),
+    cidr: z.string().min(1).describe('The pool block, for example 10.20.0.0/16.'),
+    family: family.describe('Address family; must match the CIDR.'),
+    environment: z.string().min(1).describe('Environment this pool serves, for example production.'),
+    region: z.string().min(1).describe('Region this pool serves, for example eu-west-1.'),
+    metadata: metadataSchema.optional(),
+  })
+  .strict();
+
+// addresses.ts createAddressSchema.body, plus the subnet from its path.
+// Shared by allocate_address and the allocate_address operation of
+// propose_changes.
+const addressRequest = z
+  .object({
+    subnetId: idSchema('The subnet the address belongs to.'),
+    address: z.string().min(1).describe('The IP address, for example 10.20.4.17.'),
+    status: z.enum(['ACTIVE', 'RESERVED']).optional().describe('ACTIVE (in use) or RESERVED. Defaults to ACTIVE.'),
+    hostname: z.string().min(1).optional().describe('Hostname of the machine using this address.'),
+    metadata: metadataSchema.optional(),
+  })
+  .strict();
+
+// proposals.ts operationSchema: the same three writes, each carrying the
+// body its direct tool takes, tagged with which one it is.
+const proposalOperation = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('create_pool'), input: poolRequest }).strict(),
+  z.object({ type: z.literal('create_subnet'), input: subnetRequest }).strict(),
+  z.object({ type: z.literal('allocate_address'), input: addressRequest }).strict(),
+]);
+
+// Where a person approves. Named in the tool descriptions and in every
+// propose_changes result, because the agent has to tell the user where to go.
+const APPROVAL_URL = 'https://app.nx-ip.com/proposals';
 
 // ==========================================
 // Results
@@ -284,6 +326,14 @@ const CREATE = { readOnlyHint: false, destructiveHint: false, idempotentHint: fa
 export interface McpServerOptions {
   /** Register only the read tools, whatever the key's role would allow. */
   readOnly: boolean;
+  /**
+   * The key can only propose changes (GET /v1/api-keys/self said so, see
+   * runMcpServer). The direct write tools are then not registered at all,
+   * and propose_changes is the only way to ask for a change. The API
+   * refuses those writes for such a key anyway; hiding them means the agent
+   * never plans around a tool that can only fail.
+   */
+  proposalOnly?: boolean;
 }
 
 export const READ_TOOL_NAMES = [
@@ -297,16 +347,33 @@ export const READ_TOOL_NAMES = [
   'search',
   'get_usage',
   'preview_subnet',
+  'get_proposal',
+  'list_proposals',
 ] as const;
 
 export const WRITE_TOOL_NAMES = ['create_pool', 'create_subnet', 'allocate_address'] as const;
+
+// Creates a proposal, never an address block, so it stays available to a
+// proposal-only key. Not a read either, so --read-only leaves it out.
+export const PROPOSAL_TOOL_NAMES = ['propose_changes'] as const;
+
+/** One line per operation, in the words the approval screen uses. */
+function describeOperation(operation: NxipProposal['operations'][number]): string {
+  const preview = operation.preview as Record<string, any>;
+  if (operation.type === 'create_pool') return `create pool ${preview.pool?.cidr} (${preview.pool?.name})`;
+  if (operation.type === 'create_subnet') {
+    const container = preview.container ?? {};
+    return `create subnet ${preview.subnet?.cidr} in ${container.type} ${container.name ?? container.cidr}`;
+  }
+  return `allocate ${preview.address?.address} in subnet ${preview.subnet?.name ?? preview.subnet?.cidr}`;
+}
 
 /**
  * Builds the server with its tools registered but no transport attached, so
  * tests can drive it through an in-memory transport exactly as a real client
  * would over stdio.
  */
-export function createMcpServer(client: NxipClientOptions, { readOnly }: McpServerOptions): McpServer {
+export function createMcpServer(client: NxipClientOptions, { readOnly, proposalOnly = false }: McpServerOptions): McpServer {
   const options: NxipClientOptions = { ...client, timeoutMs: client.timeoutMs ?? REQUEST_TIMEOUT_MS };
   const server = new McpServer({ name: 'nxip', version: readVersion() });
 
@@ -541,7 +608,88 @@ export function createMcpServer(client: NxipClientOptions, { readOnly }: McpServ
       )
   );
 
+  server.registerTool(
+    'get_proposal',
+    {
+      title: 'Get a change proposal',
+      description:
+        'Get one change proposal by id: its status (PENDING, APPROVED, REJECTED, FAILED or EXPIRED), each operation ' +
+        'with the exact result approval will create or did create, and why it failed if it did. Use this to check ' +
+        'whether a person has approved what you proposed. Works with any API key role.',
+      inputSchema: z.object({ id: idSchema('The proposal id.') }),
+      annotations: READ,
+    },
+    ({ id }) =>
+      respond(
+        options,
+        () => getProposal(options, id),
+        (proposal) =>
+          `Proposal ${proposal.id} is ${proposal.status}: ${proposal.operations.map(describeOperation).join('; ')}.` +
+          (proposal.status === 'FAILED' && proposal.failure ? ` ${String(proposal.failure.message)}` : '')
+      )
+  );
+
+  server.registerTool(
+    'list_proposals',
+    {
+      title: 'List change proposals',
+      description:
+        'List change proposals, newest first, one page at a time, optionally only those with one status. PENDING ' +
+        'ones are waiting for a person to approve or reject them. Works with any API key role.',
+      inputSchema: z.object({
+        status: z.enum(['PENDING', 'APPROVED', 'REJECTED', 'FAILED', 'EXPIRED']).optional().describe('Only proposals with this status.'),
+        page,
+        limit,
+      }),
+      annotations: READ,
+    },
+    (args) => respond(options, () => listProposals(options, args), (body) => pageSummary('proposal', body))
+  );
+
   if (readOnly) return server;
+
+  // ---------- Proposals ----------
+
+  server.registerTool(
+    'propose_changes',
+    {
+      title: 'Propose changes for a person to approve',
+      description:
+        'Propose up to 20 changes (create_pool, create_subnet, allocate_address) for a person to approve. Nothing ' +
+        'changes now: nxip previews each operation and pins its exact result (the CIDR a subnet will get, the ' +
+        'address), and on approval creates exactly that, all or nothing. If any operation would fail, nothing is ' +
+        'proposed and the error says which and why. Always give a reason that explains to the person approving ' +
+        'why these changes are needed. Afterwards, tell the user the proposal id and that it must be approved at ' +
+        `${APPROVAL_URL} within 24 hours. Operations are checked against what exists now, so they cannot build on ` +
+        'one another (a subnet in a pool the same proposal creates); propose the pool first and the subnet once ' +
+        'it is approved. Requires an API key with the MEMBER role or above.',
+      inputSchema: z.object({
+        reason: z
+          .string()
+          .min(1)
+          .max(2000)
+          .describe('Why these changes are needed, in plain words for the person approving them.'),
+        operations: z.array(proposalOperation).min(1).max(20).describe('The changes, in the order they will be made.'),
+      }),
+      annotations: CREATE,
+    },
+    (body) =>
+      respond(
+        options,
+        () => proposeChanges(options, body),
+        (proposal) =>
+          `Proposed ${plural(proposal.operations.length, 'change')} as proposal ${proposal.id}: ` +
+          `${proposal.operations.map(describeOperation).join('; ')}. Nothing has changed yet. ` +
+          `A person must approve it at ${APPROVAL_URL} before ${proposal.expiresAt}.`,
+        { what: 'proposal', checkWith: 'list_proposals' }
+      )
+  );
+
+  // Not registered at all for a proposal-only key, for the same reason as
+  // --read-only below: the API would refuse every call (403, "This key can
+  // only propose changes"), and a tool that can only fail is one the model
+  // should never see.
+  if (proposalOnly) return server;
 
   // ---------- Writes ----------
   // Not registered at all under --read-only, rather than registered and
@@ -557,16 +705,7 @@ export function createMcpServer(client: NxipClientOptions, { readOnly }: McpServ
         'from. nxip refuses a pool whose CIDR overlaps any existing pool of the same family (whatever its ' +
         'environment or region), a second pool for the same environment/region/family, and a pool over the ' +
         "tier's limit. Check list_pools first. Requires an API key with the ADMIN or MEMBER role.",
-      inputSchema: z
-        .object({
-          name: z.string().min(1).describe('Human-readable pool name.'),
-          cidr: z.string().min(1).describe('The pool block, for example 10.20.0.0/16.'),
-          family: family.describe('Address family; must match the CIDR.'),
-          environment: z.string().min(1).describe('Environment this pool serves, for example production.'),
-          region: z.string().min(1).describe('Region this pool serves, for example eu-west-1.'),
-          metadata: metadataSchema.optional(),
-        })
-        .strict(),
+      inputSchema: poolRequest,
       annotations: CREATE,
     },
     (body) =>
@@ -611,15 +750,7 @@ export function createMcpServer(client: NxipClientOptions, { readOnly }: McpServ
         'nxip does not pick the address: you supply it, and nxip refuses one outside the subnet, one already ' +
         'registered, or one over the tier\'s address-record limit. Use lookup_ip or list_addresses first to check ' +
         'it is free in nxip. Requires an API key with the ADMIN or MEMBER role.',
-      inputSchema: z
-        .object({
-          subnetId: idSchema('The subnet the address belongs to.'),
-          address: z.string().min(1).describe('The IP address, for example 10.20.4.17.'),
-          status: z.enum(['ACTIVE', 'RESERVED']).optional().describe('ACTIVE (in use) or RESERVED. Defaults to ACTIVE.'),
-          hostname: z.string().min(1).optional().describe('Hostname of the machine using this address.'),
-          metadata: metadataSchema.optional(),
-        })
-        .strict(),
+      inputSchema: addressRequest,
       annotations: CREATE,
     },
     ({ subnetId, ...body }) =>
@@ -651,7 +782,29 @@ export async function runMcpServer(client: NxipClientOptions, serverOptions: Mcp
   console.info = console.error;
   console.debug = console.error;
 
-  const server = createMcpServer(client, serverOptions);
+  // Before any tool is registered, because what is registered depends on
+  // it. Sent without x-nxip-organization even when --organization is set
+  // (describeKey strips it): the route describes the key itself, and
+  // answers 400 to the header.
+  //
+  // A failed check registers the direct write tools as before rather than
+  // refusing to start. The API is the enforcement: a proposal-only key is
+  // refused on every write route whatever this server offers, so the cost
+  // of guessing wrong here is a tool that fails with a clear 403, never a
+  // write that should not have happened. An API that predates the route
+  // answers 404, and has no proposal-only keys to hide anything from.
+  const timeoutMs = client.timeoutMs ?? REQUEST_TIMEOUT_MS;
+  let proposalOnly = false;
+  try {
+    proposalOnly = (await describeKey({ ...client, timeoutMs })).proposalOnly === true;
+  } catch (error) {
+    // Scrubbed like every tool result: the reason is the API's error text,
+    // which is someone else's words and may echo the key back.
+    const reason = scrub(error instanceof Error ? error.message : String(error), client.apiKey);
+    console.error(`Could not check whether this key is proposal-only (${reason}). Registering the write tools; nxip still enforces the key's limits.`);
+  }
+
+  const server = createMcpServer(client, { ...serverOptions, proposalOnly });
   await server.connect(new StdioServerTransport());
 
   // The organization this server acts on is fixed for the life of the
@@ -661,10 +814,16 @@ export async function runMcpServer(client: NxipClientOptions, serverOptions: Mcp
   // target line - advisory only, so a failed check prints nothing rather
   // than failing server startup. The same timeout as every tool call, so a
   // hung network cannot delay "server running" forever.
-  const targetLine = await resolveTargetLine({ ...client, timeoutMs: client.timeoutMs ?? REQUEST_TIMEOUT_MS });
+  const targetLine = await resolveTargetLine({ ...client, timeoutMs });
   if (targetLine) console.error(targetLine);
 
   console.error(
-    `nxip MCP server running on stdio against ${client.baseUrl}${serverOptions.readOnly ? ' (read-only: write tools not registered)' : ''}.`
+    `nxip MCP server running on stdio against ${client.baseUrl}` +
+      (serverOptions.readOnly
+        ? ' (read-only: write tools not registered)'
+        : proposalOnly
+          ? ' (proposal-only key: direct write tools not registered, use propose_changes)'
+          : '') +
+      '.'
   );
 }
