@@ -578,8 +578,12 @@ where MCP clients show a server's log.
 | `create_pool` | Create a pool | `POST /v1/pools` |
 | `create_subnet` | Allocate a subnet | `POST /v1/subnets` |
 | `allocate_address` | Register a specific address in a subnet | `POST /v1/subnets/:id/addresses` |
+| `propose_changes` | Propose pools, subnets or addresses for a person to approve | `POST /v1/proposals` |
+| `get_proposal` | One proposal, with its status and decision | `GET /v1/proposals/:id` |
+| `list_proposals` | Proposals, filterable by status | `GET /v1/proposals` |
 
-There are no update or delete tools.
+There are no update or delete tools. The three proposal tools are how an
+agent asks for a change without making it: see "Proposal-only keys" below.
 
 ### Why an agent can be trusted to allocate
 
@@ -596,8 +600,32 @@ So the agent has exactly the permissions of the key you give it:
 - A **READ_ONLY** key can use every read tool and `preview_subnet`. The three
   create tools are refused by the API with a 403.
 - An **ADMIN** or **MEMBER** key can also create pools, subnets and addresses.
+- A **proposal-only** key (a MEMBER or ADMIN key created with "Proposal
+  only" ticked) can read everything and propose changes, and nothing else.
 
 The key is never included in anything the server returns or logs.
+
+### Proposal-only keys: the agent proposes, a person approves
+
+Create the key in the dashboard under Settings, API keys, with **Proposal
+only** ticked. Give that key to the agent. The server then registers the ten
+read tools plus `propose_changes`, `get_proposal` and `list_proposals`, and
+does not register `create_pool`, `create_subnet` or `allocate_address` at all,
+so the agent never plans around a write it cannot make.
+
+`propose_changes` takes the same operations `create_pool`, `create_subnet` and
+`allocate_address` would, pins the container each one resolves to, and returns
+a proposal id and the page where a person decides:
+`https://app.nx-ip.com/proposals`. Approval applies the pinned operations
+under the approver's own role, and the audit log records both the proposal
+and the decision. Rejection applies nothing. If the world moved between the
+proposal and the approval (the space was taken, a pool was resized), the
+approval fails on that operation and says so rather than applying something
+different from what was proposed.
+
+A proposal made while acting for a customer (`NXIP_ORGANIZATION`) lives in
+that customer, so the approver switches to that customer first; the returned
+page link says so.
 
 ### `--read-only`
 
@@ -606,8 +634,8 @@ The key is never included in anything the server returns or logs.
 ```
 
 Registers only the ten read tools, whatever the key's role allows. The write
-tools are not listed at all, so the agent never plans around them, and a
-call to one by name is refused. Use it when you want an agent to answer
+tools and the proposal tools are not listed at all, so the agent never plans
+around them, and a call to one by name is refused. Use it when you want an agent to answer
 questions about your address space with a key that could otherwise write,
 though a READ_ONLY key is the stronger guarantee, since that one is enforced
 by the API.
