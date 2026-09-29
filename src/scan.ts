@@ -212,7 +212,7 @@ export interface AnalyseOptions {
  * Groups overlapping blocks into connected components: if A overlaps B and B
  * overlaps C, all three are one finding even when A and C do not touch.
  */
-function clusterOverlaps(blocks: { key: string; member: OverlapMember; range: Ipv4Range }[], pairs: Overlap[]): OverlapCluster[] {
+function clusterOverlaps(blocks: { key: string; member: OverlapMember }[], pairs: Overlap[]): OverlapCluster[] {
   const adjacency = new Map<string, Set<string>>();
   for (const block of blocks) adjacency.set(block.key, new Set());
 
@@ -874,20 +874,44 @@ export function renderDiscoveryManifest(report: ScanReport, options: ManifestOpt
     );
   }
 
-  // A collision between two Cisco prefixes in different VRFs is exactly
-  // what the per-VRF split exists for: the two sides go in different files,
-  // so neither can be "commented out in favour of the other side" here, and
-  // nothing in this file collides with anything else in it. Commenting one
-  // out anyway silently dropped a VLAN from its own VRF's manifest. The
-  // overlap is still reported: the scan report lists it, and every per-VRF
-  // file carries the bet #33 note in its header. Same-VRF collisions and
-  // Cisco-versus-cloud ones are real in one file and stay.
-  const clusters = report.clusters.filter((cluster) => {
-    if (!cluster.members.every((member) => member.provider === 'cisco')) return true;
-    // The Cisco source's network id is `vrf/cidr`, the same key commentOut
-    // uses below.
-    return new Set(cluster.members.map((member) => member.networkId.split('/')[0])).size === 1;
-  });
+  // A collision only exists in a file when both of its sides are written
+  // into that file. That is a per-file question, not a per-run one, because
+  // a run can write several files: the per-VRF split puts each VRF's
+  // prefixes in its own, and only the first of those carries the cloud
+  // networks. So the clusters are cut down to the members this file
+  // actually renders, and a cluster with one member left is not a collision
+  // here at all.
+  //
+  // Both halves of that matter. A cross-VRF collision has its two sides in
+  // two different files, so commenting one out silently dropped a VLAN from
+  // its own VRF's manifest. A Cisco prefix that loses against a cloud
+  // network was commented out of a per-VRF file with "collides with another
+  // network in this file" when the cloud network is in a different file
+  // entirely, which is both a lost prefix and an instruction the reader
+  // cannot follow. The overlap itself is still reported: the scan report
+  // lists every cluster, and each per-VRF file carries the bet #33 note.
+  //
+  // The Cisco source's network id is `vrf/cidr`, the same key commentOut
+  // uses below.
+  // Rebuilt from the pairs rather than by striking members out of the
+  // clusters the report already has. A cluster is a connected component,
+  // not a set of blocks that all overlap each other: two of a VRF's /24s
+  // can share a cluster purely because a cloud /16 contains them both, and
+  // dropping that /16 from the list would leave two members that overlap
+  // nothing, one of which would then be commented out in favour of the
+  // other. Clustering the surviving pairs answers the real question.
+  const ciscoInThisFile = new Set((ciscoGroup?.prefixes ?? []).map((prefix) => `${prefix.vrf}/${prefix.cidr}`));
+  const renderedHere = (member: OverlapMember): boolean =>
+    member.provider === 'cisco' ? ciscoInThisFile.has(member.networkId) : includeCloud;
+  const pairsHere = report.overlaps.filter((pair) => renderedHere(pair.a) && renderedHere(pair.b));
+  const blocksHere = new Map<string, { key: string; member: OverlapMember }>();
+  for (const pair of pairsHere) {
+    for (const member of [pair.a, pair.b]) {
+      const key = `${member.networkId}|${member.cidr}`;
+      if (!blocksHere.has(key)) blocksHere.set(key, { key, member });
+    }
+  }
+  const clusters = clusterOverlaps([...blocksHere.values()], pairsHere);
 
   // Collisions were the one finding with no comment block, while default
   // networks and shared ranges both had one. That gap mattered most to the

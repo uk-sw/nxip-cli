@@ -272,6 +272,51 @@ describe('two source blocks read as one estate', () => {
   });
 });
 
+describe('a Cisco prefix that collides with a cloud network', () => {
+  /**
+   * A planted 10.1.0.0/16 in AWS, which covers the 10.1.20.0/24 that core1
+   * has on Vlan20 in the default VRF and edge1 has in CUST-A. The two VRFs
+   * overlap, so the run writes one manifest per VRF and only the first of
+   * them carries the cloud networks.
+   */
+  const aws = (): Discovery => ({
+    provider: 'aws',
+    account: '123456789012',
+    regions: ['eu-west-2'],
+    networks: [{ id: 'vpc-0planted', uid: 'vpc-0planted', name: 'planted', region: 'eu-west-2', cidrs: ['10.1.0.0/16'] }],
+    subnets: [],
+  });
+
+  const filesFor = async () => {
+    const report = analyseDiscovery(mergeDiscoveries([await discover(['core1.example', 'edge1.example']), aws()]));
+    const manifests = renderDiscoveryManifests(report, { cisco: { environment: 'production', site: 'hq' } });
+    return new Map(manifests.map((m) => [m.vrf, m.text]));
+  };
+
+  it('reports the collision and comments one side out in the file that holds both sides', async () => {
+    const files = await filesFor();
+    const primary = files.get('default') ?? '';
+
+    expect(primary).toContain('# WARNING:');
+    expect(primary).toContain('collides with another network in this file');
+    // One side of the collision survives, so the file still applies as
+    // written; which side is a guess the comment block already owns up to.
+    expect(parseFullManifest(primary).subnets.map((s) => s.body.cidr)).toContain('10.1.0.0/16');
+  });
+
+  it('leaves the same prefix alone in a per-VRF file that holds nothing it collides with', async () => {
+    // The CUST-A file carries one VRF's prefixes and no cloud network at
+    // all, so "collides with another network in this file" was both untrue
+    // and unfollowable there, and it silently cost that VRF a VLAN.
+    const files = await filesFor();
+    const custA = files.get('CUST-A') ?? '';
+
+    expect(custA).not.toContain('collides with another network in this file');
+    expect(custA).not.toContain('# WARNING:');
+    expect(parseFullManifest(custA).subnets.map((s) => s.body.cidr)).toContain('10.1.20.0/24');
+  });
+});
+
 describe('the human report', () => {
   it('describes the devices, the prefixes by kind, the hosts and what was dropped', async () => {
     const report = analyseDiscovery(mergeDiscoveries([await discover(['core1.example', 'edge1.example'])]));
