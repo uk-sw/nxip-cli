@@ -813,6 +813,7 @@ the Terraform provider carries over directly:
 | `prefix_length` | Exactly one of these two | Size of the block to auto-allocate, letting nxip choose where it lands. |
 | `cidr` | Exactly one of these two | Register this exact block instead. What `nxip scan --emit-manifest` emits, so a discovered estate is recorded as it really is rather than reallocated. |
 | `kind` | No | Tags this subnet as a structural landing point for later auto-resolution. |
+| `landing_point` | No | Whether ordinary requests for the same environment, region and family are placed inside this subnet. Omitted, a kind-tagged top-level subnet defaults to `true`; `scan cisco` writes `false` on every entry so a discovered prefix never becomes a placement target. |
 | `description` | No | Free text. |
 | `metadata` | No | String key/value pairs, capped at 20 keys / 128-char keys / 256-char values, same limit the API itself enforces. |
 
