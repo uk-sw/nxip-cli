@@ -1,10 +1,14 @@
 import { overlapKind, parseIpv4Cidr, unionSize, type Ipv4Range, type OverlapKind } from './cidr.js';
 import { DEFAULT_SHARED_RANGES, isExpectedlyShared, type SharedRange } from './shared-ranges.js';
+import { formatCiscoSection, manifestGroups, mergeCiscoDetails, renderCiscoSections, type CiscoDetails, type DiscoveredPrefix } from './cisco.js';
 
 // What a discovery source hands back. Deliberately not AWS-shaped: the
 // analysis below knows nothing about EC2, so a future Azure or GCP source
 // only has to produce this same shape to reuse all of it.
-export type CloudProvider = 'aws' | 'azure';
+// `cisco` is not a cloud, and the name stays because every field and test
+// that carries it predates the on-premises source; renaming it would touch
+// every scanner for no change in behaviour.
+export type CloudProvider = 'aws' | 'azure' | 'cisco';
 
 export interface DiscoveredNetwork {
   /** Provider's own id, e.g. vpc-0a1b2c3d, or resourceGroup/vnet-name. */
@@ -63,6 +67,12 @@ export interface Discovery {
   regions: string[];
   networks: DiscoveredNetwork[];
   subnets: DiscoveredSubnet[];
+  /**
+   * The Cisco source only. Its prefixes also appear in `networks`, one
+   * each, so the collision analysis sees them; this carries what the
+   * manifest and the report need beyond a CIDR: kind, device, VRF, hosts.
+   */
+  cisco?: CiscoDetails;
 }
 
 /**
@@ -75,15 +85,41 @@ export interface MergedDiscovery {
   sources: DiscoverySource[];
   networks: DiscoveredNetwork[];
   subnets: DiscoveredSubnet[];
+  cisco?: CiscoDetails;
 }
 
 export function mergeDiscoveries(discoveries: Discovery[]): MergedDiscovery {
+  // Often one Cisco source, but a config with two `sources:` blocks gives
+  // two, and they are one estate: mergeCiscoDetails deduplicates the
+  // prefixes both of them routed rather than carrying each twice.
+  const ciscoParts = discoveries.map((d) => d.cisco).filter((c): c is CiscoDetails => c !== undefined);
+  const cisco = mergeCiscoDetails(ciscoParts);
+
+  // The Cisco source emits one network per prefix, keyed `vrf/cidr`, so the
+  // same duplicate reached the collision analysis as two networks claiming
+  // exactly the same block and the estate was reported as colliding with
+  // itself. Deduped on the same key the prefixes are.
+  const networks: DiscoveredNetwork[] = [];
+  const ciscoNetworkIds = new Set<string>();
+  for (const discovery of discoveries) {
+    for (const network of discovery.networks) {
+      // Stamping the provider here rather than in each source module keeps
+      // the scanners ignorant of whether they are running alone or
+      // alongside another.
+      const provider = network.provider ?? discovery.provider;
+      if (provider === 'cisco') {
+        if (ciscoNetworkIds.has(network.id)) continue;
+        ciscoNetworkIds.add(network.id);
+      }
+      networks.push({ ...network, provider });
+    }
+  }
+
   return {
     sources: discoveries.map((d) => ({ provider: d.provider, account: d.account, regions: d.regions })),
-    // Stamping the provider here rather than in each source module keeps the
-    // scanners ignorant of whether they are running alone or alongside another.
-    networks: discoveries.flatMap((d) => d.networks.map((n) => ({ ...n, provider: n.provider ?? d.provider }))),
+    networks,
     subnets: discoveries.flatMap((d) => d.subnets.map((s) => ({ ...s, provider: s.provider ?? d.provider }))),
+    ...(cisco ? { cisco } : {}),
   };
 }
 
@@ -176,7 +212,7 @@ export interface AnalyseOptions {
  * Groups overlapping blocks into connected components: if A overlaps B and B
  * overlaps C, all three are one finding even when A and C do not touch.
  */
-function clusterOverlaps(blocks: { key: string; member: OverlapMember; range: Ipv4Range }[], pairs: Overlap[]): OverlapCluster[] {
+function clusterOverlaps(blocks: { key: string; member: OverlapMember }[], pairs: Overlap[]): OverlapCluster[] {
   const adjacency = new Map<string, Set<string>>();
   for (const block of blocks) adjacency.set(block.key, new Set());
 
@@ -315,6 +351,15 @@ export function analyseDiscovery(
       const kind = overlapKind(left.range, right.range);
       if (!kind) continue;
 
+      // Two routed prefixes from the Cisco source nesting inside each other
+      // is what a routing table looks like: a /16 static summary towards a
+      // site and the /24 VLANs inside it are one plan, not a collision.
+      // Identical prefixes across VRFs are kept, since that is the case
+      // the per-VRF manifest split exists for and the report should show
+      // it. Partial overlap cannot happen between two aligned blocks.
+      const bothCisco = left.member.provider === 'cisco' && right.member.provider === 'cisco';
+      if (bothCisco && kind !== 'identical') continue;
+
       const sharedStart = Math.max(left.range.start, right.range.start);
       const sharedEnd = Math.min(left.range.end, right.range.end);
 
@@ -372,6 +417,8 @@ function networkNoun(report: ScanReport, plural = false): string {
   const providers = new Set(report.discovery.sources.map((s) => s.provider));
   if (providers.size === 1 && providers.has('aws')) return plural ? 'VPCs' : 'VPC';
   if (providers.size === 1 && providers.has('azure')) return plural ? 'VNets' : 'VNet';
+  // The Cisco source's networks are routed prefixes, one each.
+  if (providers.size === 1 && providers.has('cisco')) return plural ? 'prefixes' : 'prefix';
   return plural ? 'networks' : 'network';
 }
 
@@ -384,10 +431,12 @@ function networkNoun(report: ScanReport, plural = false): string {
  * qualifier the report carries. Two renderers for one fact is two things to
  * keep in step, and no way to notice when they stop agreeing.
  */
-export function formatOverlapClusters(report: ScanReport, prefix = ''): string[] {
+export function formatOverlapClusters(report: ScanReport, prefix = '', only?: OverlapCluster[]): string[] {
   const lines: string[] = [];
 
-  for (const cluster of report.clusters) {
+  // `only` lets the manifest render the subset it has actually acted on,
+  // rather than describing a collision it has left alone.
+  for (const cluster of only ?? report.clusters) {
     // Two networks is the common case and reads better on one line: "A vs B"
     // is legible at a glance, where a header plus two rows spends four lines
     // restating what the rows already show. Past two it stops working, since
@@ -431,6 +480,19 @@ export function formatOverlapClusters(report: ScanReport, prefix = ''): string[]
   return lines;
 }
 
+/**
+ * Every host the run named failed to be read. `scan cisco` exits non-zero
+ * on it: a container run or a CI step that reached no device at all is not
+ * a success, and exit 0 there reads as "your network holds nothing" rather
+ * than as "nothing answered". A run where one device of ten failed still
+ * exits 0, because nine devices' worth of address plan is worth having and
+ * the report names the tenth.
+ */
+export function everyCiscoDeviceFailed(discovery: MergedDiscovery): boolean {
+  const cisco = discovery.cisco;
+  return cisco !== undefined && cisco.devices.length === 0 && cisco.failures.length > 0;
+}
+
 export function formatScanReport(report: ScanReport): string {
   const lines: string[] = [];
   const { totals, discovery } = report;
@@ -460,17 +522,34 @@ export function formatScanReport(report: ScanReport): string {
   }
   lines.push('');
 
+  // The Cisco source describes itself: devices, prefixes by kind, hosts in
+  // ARP, what was dropped. Its per-prefix "networks" are skipped in the
+  // cloud loop below, where "0 subnets, 0% carved" would say nothing true.
+  const ciscoOnly = discovery.sources.length > 0 && discovery.sources.every((s) => s.provider === 'cisco');
+  if (!ciscoOnly && totals.networks > 0) {
+    const cloudNetworks = discovery.networks.filter((n) => n.provider !== 'cisco').length;
+    lines.push(`Found ${cloudNetworks} ${networkNoun(report, cloudNetworks !== 1)} and ${totals.subnets} subnet${totals.subnets === 1 ? '' : 's'}.`);
+    lines.push('');
+  }
+  // Before the empty-report return below, not after it. When every device
+  // refused the credential there are no networks at all, and the old order
+  // printed "No prefixes found. Nothing to analyse." without ever naming
+  // the device that failed or what it said. That is the first five minutes
+  // of somebody's first run, and it was the one moment the report had
+  // nothing useful to say.
+  if (discovery.cisco) {
+    lines.push(...formatCiscoSection(discovery.cisco));
+  }
+
   if (totals.networks === 0) {
     lines.push(`No ${networkNoun(report, true)} found. Nothing to analyse.`);
     lines.push('');
     return lines.join('\n');
   }
 
-  lines.push(`Found ${totals.networks} ${networkNoun(report, totals.networks !== 1)} and ${totals.subnets} subnet${totals.subnets === 1 ? '' : 's'}.`);
-  lines.push('');
-
   for (const summary of report.summaries) {
     const { network } = summary;
+    if (network.provider === 'cisco') continue;
     const suffix = network.isDefault ? '  [default]' : '';
     const cloud = discovery.sources.length > 1 && network.provider ? `${network.provider}  ` : '';
     lines.push(`  ${cloud}${label(network.name, network.id)}  ${network.region}${suffix}`);
@@ -616,6 +695,9 @@ export function proposePools(report: ScanReport, options: ProposePoolsOptions = 
     // region's carries the same block, so importing them is impossible as
     // well as unwanted: the first would register and the rest collide.
     if (network.isDefault && !options.includeDefaultNetworks) continue;
+    // Routed prefixes are rendered by the Cisco source's own section, with
+    // real pools and kinds, never as a VPC-shaped structural subnet.
+    if (network.provider === 'cisco') continue;
     for (const cidr of network.cidrs) {
       if (cidr.includes(':')) continue;
       const range = parseIpv4Cidr(cidr);
@@ -695,11 +777,41 @@ export interface ManifestOptions {
    * guess from a file modification time that a copy or commit can reset.
    */
   generatedAt?: Date;
+  /** How the Cisco source's entries are labelled, and any pools given to replace the guess. */
+  cisco?: { environment?: string; site?: string; pools?: string[] };
+  /**
+   * Which of the Cisco source's manifests to render when overlapping VRFs
+   * force one per VRF. Defaults to the first. Set by renderDiscoveryManifests.
+   */
+  ciscoGroup?: { vrf: string | null; prefixes: DiscoveredPrefix[] };
+  /**
+   * Whether the cloud half of the run goes in this file. True by default;
+   * false for the second and later per-VRF manifests, which hold only that
+   * VRF's prefixes so the cloud networks are not registered twice.
+   */
+  cloud?: boolean;
+}
+
+/**
+ * Every manifest a run needs. One, unless the Cisco source found two VRFs
+ * with overlapping space, in which case one per VRF: the first also holds
+ * whatever the cloud sources found, the rest hold only their VRF.
+ */
+export function renderDiscoveryManifests(report: ScanReport, options: ManifestOptions = {}): { vrf: string | null; text: string }[] {
+  const details = report.discovery.cisco;
+  if (!details) return [{ vrf: null, text: renderDiscoveryManifest(report, options) }];
+  return manifestGroups(details).map((group, index) => ({
+    vrf: group.vrf,
+    text: renderDiscoveryManifest(report, { ...options, ciscoGroup: group, cloud: index === 0 }),
+  }));
 }
 
 export function renderDiscoveryManifest(report: ScanReport, options: ManifestOptions = {}): string {
   const sharedRanges = options.sharedRanges ?? [];
   const excludeWith = options.includeShared ? [] : sharedRanges;
+  const includeCloud = options.cloud !== false;
+  const ciscoDetails = report.discovery.cisco;
+  const ciscoGroup = options.ciscoGroup ?? (ciscoDetails ? manifestGroups(ciscoDetails)[0] : undefined);
 
   // Space inside a deliberately-shared range is not an address plan of its
   // own: a 25-cluster EKS fleet reusing 100.64.0.0/16 by design would
@@ -708,8 +820,10 @@ export function renderDiscoveryManifest(report: ScanReport, options: ManifestOpt
   // either way so the discovery is never silently lost.
   const sharedOf = (pool: ProposedPool) =>
     isExpectedlyShared(pool.range.start, pool.range.end, sharedRanges);
-  const pools = proposePools(report, { sharedRanges: excludeWith, includeDefaultNetworks: options.includeDefaultNetworks });
-  const heldBack = options.includeShared
+  const pools = includeCloud
+    ? proposePools(report, { sharedRanges: excludeWith, includeDefaultNetworks: options.includeDefaultNetworks })
+    : [];
+  const heldBack = options.includeShared || !includeCloud
     ? []
     : proposePools(report, { sharedRanges, select: 'shared', includeDefaultNetworks: options.includeDefaultNetworks });
 
@@ -728,22 +842,76 @@ export function renderDiscoveryManifest(report: ScanReport, options: ManifestOpt
     '#',
   ];
 
-  lines.push(
-    '# This file declares subnets only, and no pools. A VPC or VNet is not a',
-    '# pool: a pool is the block you carve address space out of, and a cloud',
-    '# network is itself carved out of that. So each network below is a',
-    '# structural subnet, and the subnets inside it nest underneath it.',
-    '#',
-    '# That means a pool has to exist first, covering the environment, region',
-    '# and family below. Only you know what your real address plan is, so a',
-    '# scan will not invent one. If none exists, `npx nxip-cli plan` says so',
-    '# nothing will be created.',
-    '#',
-    '# Apply with:  npx nxip-cli plan -f <this file>',
-    '#        then: npx nxip-cli apply -f <this file>',
-    '# Parents are created before their children, so this loads in one step.',
-    ''
-  );
+  if (ciscoDetails) {
+    // The Cisco source declares pools of its own (guessed or given), so the
+    // "no pools" explanation below would be untrue for this file.
+    lines.push(
+      '# The pools at the top belong to the Cisco source. Any cloud network in',
+      '# this file is a structural subnet as in a cloud-only scan, and needs a',
+      '# pool of its own environment and region to exist first.',
+      '#',
+      '# Apply with:  npx nxip-cli plan -f <this file>',
+      '#        then: npx nxip-cli apply -f <this file>',
+      '# Pools are created first, then parents before children.',
+      ''
+    );
+  } else {
+    lines.push(
+      '# This file declares subnets only, and no pools. A VPC or VNet is not a',
+      '# pool: a pool is the block you carve address space out of, and a cloud',
+      '# network is itself carved out of that. So each network below is a',
+      '# structural subnet, and the subnets inside it nest underneath it.',
+      '#',
+      '# That means a pool has to exist first, covering the environment, region',
+      '# and family below. Only you know what your real address plan is, so a',
+      '# scan will not invent one. If none exists, `npx nxip-cli plan` says so',
+      '# nothing will be created.',
+      '#',
+      '# Apply with:  npx nxip-cli plan -f <this file>',
+      '#        then: npx nxip-cli apply -f <this file>',
+      '# Parents are created before their children, so this loads in one step.',
+      ''
+    );
+  }
+
+  // A collision only exists in a file when both of its sides are written
+  // into that file. That is a per-file question, not a per-run one, because
+  // a run can write several files: the per-VRF split puts each VRF's
+  // prefixes in its own, and only the first of those carries the cloud
+  // networks. So the clusters are cut down to the members this file
+  // actually renders, and a cluster with one member left is not a collision
+  // here at all.
+  //
+  // Both halves of that matter. A cross-VRF collision has its two sides in
+  // two different files, so commenting one out silently dropped a VLAN from
+  // its own VRF's manifest. A Cisco prefix that loses against a cloud
+  // network was commented out of a per-VRF file with "collides with another
+  // network in this file" when the cloud network is in a different file
+  // entirely, which is both a lost prefix and an instruction the reader
+  // cannot follow. The overlap itself is still reported: the scan report
+  // lists every cluster, and each per-VRF file carries the bet #33 note.
+  //
+  // The Cisco source's network id is `vrf/cidr`, the same key commentOut
+  // uses below.
+  // Rebuilt from the pairs rather than by striking members out of the
+  // clusters the report already has. A cluster is a connected component,
+  // not a set of blocks that all overlap each other: two of a VRF's /24s
+  // can share a cluster purely because a cloud /16 contains them both, and
+  // dropping that /16 from the list would leave two members that overlap
+  // nothing, one of which would then be commented out in favour of the
+  // other. Clustering the surviving pairs answers the real question.
+  const ciscoInThisFile = new Set((ciscoGroup?.prefixes ?? []).map((prefix) => `${prefix.vrf}/${prefix.cidr}`));
+  const renderedHere = (member: OverlapMember): boolean =>
+    member.provider === 'cisco' ? ciscoInThisFile.has(member.networkId) : includeCloud;
+  const pairsHere = report.overlaps.filter((pair) => renderedHere(pair.a) && renderedHere(pair.b));
+  const blocksHere = new Map<string, { key: string; member: OverlapMember }>();
+  for (const pair of pairsHere) {
+    for (const member of [pair.a, pair.b]) {
+      const key = `${member.networkId}|${member.cidr}`;
+      if (!blocksHere.has(key)) blocksHere.set(key, { key, member });
+    }
+  }
+  const clusters = clusterOverlaps([...blocksHere.values()], pairsHere);
 
   // Collisions were the one finding with no comment block, while default
   // networks and shared ranges both had one. That gap mattered most to the
@@ -752,8 +920,10 @@ export function renderDiscoveryManifest(report: ScanReport, options: ManifestOpt
   // the file, and never mentioned anywhere. They would meet it as a
   // duplicate-CIDR rejection at apply, about a collision they were never
   // told existed.
-  if (report.clusters.length > 0) {
-    const count = report.clusters.length;
+  // Only in the primary file: a per-VRF manifest after the first holds one
+  // VRF's prefixes and nothing it could collide with is in it.
+  if (clusters.length > 0 && includeCloud) {
+    const count = clusters.length;
     lines.push(`# WARNING: ${count} address collision${count === 1 ? '' : 's'} between the networks below.`);
     lines.push('#');
     lines.push('# These are conflicts within this scan. It has not been compared against');
@@ -774,7 +944,7 @@ export function renderDiscoveryManifest(report: ScanReport, options: ManifestOpt
     lines.push('# The networks in each collision below cannot be peered or routed to each');
     lines.push('# other without renumbering one side:');
     lines.push('#');
-    lines.push(...formatOverlapClusters(report, '#'));
+    lines.push(...formatOverlapClusters(report, '#', clusters));
     lines.push('');
   }
 
@@ -793,7 +963,7 @@ export function renderDiscoveryManifest(report: ScanReport, options: ManifestOpt
   // it, which is not true the other way round. It is still a guess about
   // somebody else's network, so the comment block says so.
   const collisionLosers = new Set<string>();
-  for (const cluster of report.clusters) {
+  for (const cluster of clusters) {
     const ranked = [...cluster.members].sort((a, b) => {
       const pa = parseIpv4Cidr(a.cidr)?.prefixLength ?? 32;
       const pb = parseIpv4Cidr(b.cidr)?.prefixLength ?? 32;
@@ -802,6 +972,10 @@ export function renderDiscoveryManifest(report: ScanReport, options: ManifestOpt
     for (const loser of ranked.slice(1)) collisionLosers.add(loser.networkId);
   }
 
+  // The Cisco source's header and pools go in front of this line, spliced
+  // in below once its subnet names are known, so that `pools:` comes before
+  // `subnets:` the way parseFullManifest applies them.
+  const subnetsHeaderAt = lines.length;
   lines.push('subnets:');
 
   for (const pool of pools) {
@@ -861,7 +1035,7 @@ export function renderDiscoveryManifest(report: ScanReport, options: ManifestOpt
       : []
   );
 
-  for (const subnet of report.discovery.subnets) {
+  for (const subnet of includeCloud ? report.discovery.subnets : []) {
     if (subnet.cidr.includes(':')) continue;
     const range = parseIpv4Cidr(subnet.cidr);
     if (!range) continue;
@@ -924,19 +1098,53 @@ export function renderDiscoveryManifest(report: ScanReport, options: ManifestOpt
     lines.push(...subnetLines);
   }
 
+  // The Cisco source's part of the file. Computed here, after the cloud
+  // names are known, so no entry of either half can take the other's name;
+  // its header and pools then go above `subnets:`.
+  const ciscoSections = ciscoDetails && ciscoGroup
+    ? renderCiscoSections(
+        ciscoDetails,
+        ciscoGroup.prefixes,
+        ciscoGroup.vrf,
+        {
+          environment: options.cisco?.environment ?? ciscoDetails.environment,
+          site: options.cisco?.site ?? ciscoDetails.site,
+          pools: options.cisco?.pools,
+          reservedNames: used,
+          commentOut: collisionLosers,
+        }
+      )
+    : null;
+  if (ciscoSections) {
+    lines.push(...ciscoSections.subnets);
+    const above = [...ciscoSections.header];
+    if (ciscoSections.pools.length > 0) above.push('pools:', ...ciscoSections.pools);
+    lines.splice(subnetsHeaderAt, 0, ...above);
+  }
+  const ciscoEmitted = ciscoSections !== null && ciscoSections.subnets.length > 0;
+
   // Everything discovered was set aside, so this file would fail to parse
   // with "must declare at least one pool or subnet". Say why here rather
   // than letting `plan -f` deliver that as its own puzzle.
-  if (pools.length === 0 && subnetLines.length === 0) {
+  if (pools.length === 0 && subnetLines.length === 0 && !ciscoEmitted) {
     lines.push('# Nothing to import.');
     lines.push('#');
-    lines.push('# Everything discovered was set aside: cloud-provisioned default');
-    lines.push('# networks, and address space inside ranges expected to be shared.');
-    lines.push('# Neither belongs in an address plan, so there is nothing to declare.');
-    lines.push('#');
-    lines.push('# --include-default-networks or --include-shared will emit them anyway.');
+    if (ciscoDetails) {
+      lines.push('# Every routed prefix read from the devices was dropped: the default');
+      lines.push('# route, host routes, summaries, link-local, or public space. Pass');
+      lines.push('# --include-public to keep public prefixes, and check the report for');
+      lines.push('# devices that could not be read.');
+    } else {
+      lines.push('# Everything discovered was set aside: cloud-provisioned default');
+      lines.push('# networks, and address space inside ranges expected to be shared.');
+      lines.push('# Neither belongs in an address plan, so there is nothing to declare.');
+      lines.push('#');
+      lines.push('# --include-default-networks or --include-shared will emit them anyway.');
+    }
     lines.push('');
   }
+
+  if (ciscoSections) lines.push(...ciscoSections.footer);
 
   if (collisionLoserSubnets.length > 0) {
     lines.push('# Left out with their network: these belong to a network commented out');
@@ -1036,7 +1244,29 @@ export function redactDiscovery(discovery: MergedDiscovery): MergedDiscovery {
     return pseudonym(accounts, account, `${provider ?? 'cloud'}-account`);
   };
 
+  // The Cisco source names devices by hostname and serial, both of which
+  // identify an estate at least as well as an account id does. Hostnames
+  // become device-N (the same pseudonym wherever the device is mentioned,
+  // including seen_on), serials and the host specs are dropped. Prefixes,
+  // VRF names, interfaces and next hops stay: they are the finding.
+  const devices = new Map<string, string>();
+  const deviceFor = (hostname: string) => pseudonym(devices, hostname, 'device');
+  const cisco: CiscoDetails | undefined = discovery.cisco
+    ? {
+        ...discovery.cisco,
+        devices: discovery.cisco.devices.map((device) => ({ ...device, host: deviceFor(device.hostname), hostname: deviceFor(device.hostname), serial: null })),
+        failures: discovery.cisco.failures.map((failure) => ({ ...failure, host: pseudonym(devices, failure.host, 'device') })),
+        prefixes: discovery.cisco.prefixes.map((prefix) => ({
+          ...prefix,
+          device: deviceFor(prefix.device),
+          serial: null,
+          seenOn: prefix.seenOn.map(deviceFor),
+        })),
+      }
+    : undefined;
+
   return {
+    ...(cisco ? { cisco } : {}),
     sources: discovery.sources.map((source) => ({
       provider: source.provider,
       account: accountFor(source.provider, source.account),

@@ -35,6 +35,12 @@ export interface NxipSubnetBody {
   region?: string;
   parentSubnetId?: string;
   kind?: string;
+  /**
+   * createSubnetSchema's `landingPoint`. Omitted, the API defaults a
+   * kind-tagged top-level subnet to true; the Cisco source sends false so a
+   * discovered prefix never becomes a placement target.
+   */
+  landingPoint?: boolean;
   name?: string;
   description?: string;
   metadata?: Record<string, string>;

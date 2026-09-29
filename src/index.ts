@@ -9,10 +9,14 @@ import { expandSiteSpec, renderManifest, SiteSpecError } from './site.js';
 import { readVersion } from './version.js';
 import { discoverAws, AwsScanError } from './aws.js';
 import { discoverAzure, AzureScanError } from './azure.js';
-import { analyseDiscovery, formatScanReport, renderDiscoveryManifest, mergeDiscoveries, redactDiscovery, type Discovery } from './scan.js';
+import { analyseDiscovery, everyCiscoDeviceFailed, formatScanReport, renderDiscoveryManifests, mergeDiscoveries, redactDiscovery, type Discovery } from './scan.js';
 import { DEFAULT_SHARED_RANGES, parseSharedRanges, SharedRangeError } from './shared-ranges.js';
 import { findUnknownMcpArgument } from './mcp-args.js';
 import { buildTree, formatTree, PoolSelectionError, selectPool, shouldUseColor } from './tree.js';
+import { discoverCisco, CiscoScanError, WHAT_NXIP_NEVER_DOES } from './cisco.js';
+import { readKnownHosts, KnownHostsError, type KnownHostEntry } from './known-hosts.js';
+import type { UnknownHostKey } from './ssh.js';
+import { AgentConfigError, defaultDependencies, loadAgentConfig, runAgent } from './agent.js';
 
 interface ParsedArgs {
   command: string;
@@ -37,10 +41,22 @@ interface ParsedArgs {
   allSubscriptions: boolean;
   failOnOverlap: boolean;
   readOnly: boolean;
-  /** tree only. */
+  /** tree: one pool by id or name. scan cisco: pools replacing the guess, comma-separated. */
   pool?: string;
   depth?: string;
   free: boolean;
+  /** scan cisco. */
+  hosts: string[];
+  user?: string;
+  keyFile?: string;
+  knownHosts?: string;
+  vrfs?: string[];
+  staticOnly: boolean;
+  includePublic: boolean;
+  site?: string;
+  environment?: string;
+  /** agent. */
+  config?: string;
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -59,6 +75,9 @@ function parseArgs(argv: string[]): ParsedArgs {
     failOnOverlap: false,
     readOnly: false,
     free: false,
+    hosts: [],
+    staticOnly: false,
+    includePublic: false,
   };
 
   // `scan` takes one or more providers as leading positionals, so
@@ -115,6 +134,28 @@ function parseArgs(argv: string[]): ParsedArgs {
       args.depth = rest[++i];
     } else if (arg === '--free') {
       args.free = true;
+    } else if (arg === '--host') {
+      // Repeatable, and each occurrence may be a comma list: `--host a --host b`
+      // and `--host a,b` read the same.
+      args.hosts.push(...(rest[++i] ?? '').split(',').map((h) => h.trim()).filter(Boolean));
+    } else if (arg === '--user') {
+      args.user = rest[++i];
+    } else if (arg === '--key-file') {
+      args.keyFile = rest[++i];
+    } else if (arg === '--known-hosts') {
+      args.knownHosts = rest[++i];
+    } else if (arg === '--vrf') {
+      args.vrfs = [...(args.vrfs ?? []), ...(rest[++i] ?? '').split(',').map((v) => v.trim()).filter(Boolean)];
+    } else if (arg === '--static-only') {
+      args.staticOnly = true;
+    } else if (arg === '--include-public') {
+      args.includePublic = true;
+    } else if (arg === '--site') {
+      args.site = rest[++i];
+    } else if (arg === '--environment') {
+      args.environment = rest[++i];
+    } else if (arg === '--config') {
+      args.config = rest[++i];
     }
   }
 
@@ -153,12 +194,17 @@ function loadManifest(file: string | undefined): Manifest | null {
 
 function printUsage(stream: 'out' | 'err' = 'err') {
   const write = stream === 'out' ? console.log : console.error;
-  write(`Usage: ${CLI} scan <aws|azure> [aws|azure] [--exclude CIDR,...] [--include-shared]`);
+  write(`Usage: ${CLI} scan <aws|azure|cisco> [aws|azure|cisco] [--exclude CIDR,...] [--include-shared]`);
   write('                     [--include-default-networks]');
   write('                     [--redact] [--json] [--emit-manifest] [-o FILE]');
   write('                     [--fail-on-overlap]   exit 1 if a real conflict is found');
   write('         aws:   [--region NAME,...] [--profile NAME]');
   write('         azure: [--subscription ID,...]');
+  write('         cisco: --host HOST[:PORT] [--host ...] [--user NAME] [--key-file PATH]');
+  write('                [--known-hosts PATH] [--vrf NAME,...] [--static-only] [--include-public]');
+  write('                [--pool CIDR,...] [--site NAME] [--environment NAME]');
+  write('                credentials: NXIP_SSH_USER, NXIP_SSH_PASSWORD, or --key-file');
+  write(`       ${CLI} agent --config <agent.yaml>   read devices on a schedule, file change proposals (needs NXIP_API_KEY)`);
   write(`       ${CLI} scaffold -f <site.yaml> [-o <manifest.yaml>]`);
   write(`       ${CLI} <plan|apply> -f <manifest.yaml> [--api-key KEY] [--url URL] [--organization ID] [--auto-approve]`);
   write(`       ${CLI} mcp [--read-only] [--organization ID]   MCP server on stdio, for AI agents (needs NXIP_API_KEY)`);
@@ -175,8 +221,12 @@ function printUsage(stream: 'out' | 'err' = 'err') {
   write('this machine. It never contacts nxip. To compare against what your nxip');
   write(`organization already holds, use \`${CLI} plan -f <manifest.yaml>\` instead.`);
   write('');
-  write('scan and scaffold need no nxip account. plan, apply, tree and mcp need an API key.');
-  write('Docs: https://nx-ip.com/docs/nxip-cli');
+  write('scan and scaffold need no nxip account. plan, apply, tree, mcp and agent need an API key.');
+  write('');
+  write('What nxip never does, on your network:');
+  for (const line of WHAT_NXIP_NEVER_DOES) write(`  ${line}`);
+  write('');
+  write('Docs: https://nx-ip.com/docs/nxip-cli   Agent: https://nx-ip.com/docs/nxip-agent');
 }
 
 // How to tell someone to run this. The bin is `nxip`, which only exists
@@ -200,7 +250,45 @@ async function listPoolsQuietly(options: Parameters<typeof listPools>[0]) {
   }
 }
 
-const COMMANDS = new Set(['scan', 'scaffold', 'plan', 'apply', 'mcp', 'tree']);
+const COMMANDS = new Set(['scan', 'scaffold', 'plan', 'apply', 'mcp', 'tree', 'agent']);
+
+/**
+ * How `scan cisco` treats a host key that is not in known_hosts: it asks,
+ * as ssh does, when someone is at the keyboard, and refuses otherwise. The
+ * key is never written to the file, which is usually a read-only mount;
+ * the line to add is printed so the operator can add it on purpose.
+ */
+async function askAboutUnknownHostKey(key: UnknownHostKey): Promise<boolean> {
+  console.error(`The authenticity of host ${key.host}${key.port === 22 ? '' : `:${key.port}`} can't be established.`);
+  console.error(`${key.keyType} key fingerprint is ${key.fingerprint}.`);
+  console.error(`To trust it in future, add this line to your known_hosts file:\n  ${key.line}`);
+  if (!process.stdin.isTTY) {
+    console.error('Not connecting: no terminal to ask on. Add the line above to known_hosts and re-run.');
+    return false;
+  }
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  try {
+    const answer = await rl.question('Are you sure you want to continue connecting (yes/no)? ');
+    return answer.trim().toLowerCase() === 'yes';
+  } finally {
+    rl.close();
+  }
+}
+
+/** The known_hosts file for scan cisco: the flag, the container mount, or the user's own. */
+function loadKnownHostsForScan(path: string | undefined): KnownHostEntry[] {
+  const candidates = path ? [path] : ['/agent/known_hosts', `${process.env.HOME ?? ''}/.ssh/known_hosts`];
+  for (const candidate of candidates) {
+    try {
+      return readKnownHosts(candidate);
+    } catch (error) {
+      // A named file that cannot be read is an error; a default that does
+      // not exist just means nothing is trusted yet.
+      if (path) throw error;
+    }
+  }
+  return [];
+}
 
 
 async function main() {
@@ -267,18 +355,24 @@ async function main() {
   // account, using credentials they already have. Nothing is written
   // anywhere and nothing leaves the machine.
   if (args.command === 'scan') {
-    const SUPPORTED = new Set(['aws', 'azure']);
+    const SUPPORTED = new Set(['aws', 'azure', 'cisco']);
     const unknown = args.providers.filter((p) => !SUPPORTED.has(p));
     if (args.providers.length === 0 || unknown.length > 0) {
-      console.error(`Usage: ${CLI} scan <aws|azure> [aws|azure] [provider flags] [--exclude CIDR,...] [--include-shared] [--redact] [--json] [--emit-manifest] [-o FILE]`);
+      console.error(`Usage: ${CLI} scan <aws|azure|cisco> [aws|azure|cisco] [provider flags] [--exclude CIDR,...] [--include-shared] [--redact] [--json] [--emit-manifest] [-o FILE]`);
       console.error(
         unknown.length > 0
-          ? `Unknown provider${unknown.length === 1 ? '' : 's'} ${unknown.map((u) => `"${u}"`).join(', ')}. Supported: aws, azure.`
-          : 'Missing provider. Supported: aws, azure.'
+          ? `Unknown provider${unknown.length === 1 ? '' : 's'} ${unknown.map((u) => `"${u}"`).join(', ')}. Supported: aws, azure, cisco.`
+          : 'Missing provider. Supported: aws, azure, cisco.'
       );
       process.exitCode = 1;
       return;
     }
+
+    // The Cisco source's labels. The site is the manifest's region, so it
+    // is a separate flag from --region, which names AWS regions.
+    const site = args.site ?? 'on-prem';
+    const environment = args.environment ?? 'production';
+    const ciscoPools = args.providers.includes('cisco') && args.pool ? args.pool.split(',').map((p) => p.trim()).filter(Boolean) : undefined;
 
     // Each provider is scanned separately then merged, so one estate is
     // analysed as a whole. That is where cross-cloud findings come from: no
@@ -286,13 +380,35 @@ async function main() {
     const discoveries: Discovery[] = [];
     for (const provider of args.providers) {
       try {
+        if (provider === 'cisco') {
+          // Credentials come from the environment or a key file, never a
+          // flag: a password on the command line lands in shell history and
+          // in `ps` output on a shared host.
+          const keyFile = args.keyFile;
+          discoveries.push(
+            await discoverCisco({
+              hosts: args.hosts,
+              username: args.user ?? process.env.NXIP_SSH_USER ?? '',
+              password: keyFile ? undefined : process.env.NXIP_SSH_PASSWORD,
+              privateKey: keyFile ? readFileSync(keyFile) : undefined,
+              hostKeys: { knownHosts: loadKnownHostsForScan(args.knownHosts), onUnknown: askAboutUnknownHostKey },
+              site,
+              environment,
+              vrfs: args.vrfs,
+              staticOnly: args.staticOnly,
+              includePublic: args.includePublic,
+              onProgress: (message) => console.error(message),
+            })
+          );
+          continue;
+        }
         discoveries.push(
           provider === 'aws'
             ? await discoverAws({ regions: args.regions, allRegions: args.allRegions, profile: args.profile })
             : await discoverAzure({ subscriptions: args.subscriptions, allSubscriptions: args.allSubscriptions })
         );
       } catch (error) {
-        const known = error instanceof AwsScanError || error instanceof AzureScanError;
+        const known = error instanceof AwsScanError || error instanceof AzureScanError || error instanceof CiscoScanError || error instanceof KnownHostsError;
         console.error(known ? (error as Error).message : `${provider} scan failed: ${error instanceof Error ? error.message : String(error)}`);
         process.exitCode = 1;
         return;
@@ -322,8 +438,27 @@ async function main() {
 
     const report = analyseDiscovery(discovery, { sharedRanges, includeDefaultNetworks: args.includeDefaultNetworks });
 
+    // Set here rather than at the end, because every branch below returns
+    // its own way and one of them would otherwise skip it. Nothing was
+    // read from any device the run named, so the run failed even though
+    // the report prints happily: the section above says which host and
+    // what it said.
+    if (everyCiscoDeviceFailed(discovery)) {
+      process.exitCode = 1;
+    }
+
+    // Usually one manifest. The Cisco source produces one per VRF when two
+    // VRFs overlap, since nxip refuses overlap inside one organisation.
+    const manifests = args.emitManifest
+      ? renderDiscoveryManifests(report, {
+          sharedRanges: configuredShared,
+          includeShared: args.includeShared,
+          includeDefaultNetworks: args.includeDefaultNetworks,
+          cisco: { environment, site, pools: ciscoPools },
+        })
+      : [];
     const output = args.emitManifest
-      ? renderDiscoveryManifest(report, { sharedRanges: configuredShared, includeShared: args.includeShared, includeDefaultNetworks: args.includeDefaultNetworks })
+      ? manifests[0]?.text ?? ''
       : args.json
         ? `${JSON.stringify(report, null, 2)}\n`
         : formatScanReport(report);
@@ -339,6 +474,30 @@ async function main() {
     if (args.emitManifest && report.totals.networks > 0 && !output.includes('\nsubnets:')) {
       console.error('Nothing to import: everything discovered was a default network or shared-range space.');
       console.error('Use --include-default-networks or --include-shared to emit them anyway.');
+    }
+
+    if (manifests.length > 1) {
+      const vrfs = manifests.map((m) => m.vrf ?? 'default');
+      console.error(`\nNOTE: VRFs ${vrfs.join(', ')} carry overlapping address space, so this is one manifest per VRF.`);
+      console.error('nxip refuses overlap inside one organisation: apply each file to a separate');
+      console.error('organisation, one per routing domain, until routing domains exist (roadmap bet #33).');
+      if (args.output) {
+        // estate.yaml becomes estate-default.yaml, estate-CUST-A.yaml, and so on.
+        const dot = args.output.lastIndexOf('.');
+        const stem = dot > 0 ? args.output.slice(0, dot) : args.output;
+        const ext = dot > 0 ? args.output.slice(dot) : '';
+        for (const manifest of manifests) {
+          const file = `${stem}-${(manifest.vrf ?? 'default').replace(/[^A-Za-z0-9_-]+/g, '_')}${ext}`;
+          writeFileSync(file, manifest.text, 'utf-8');
+          console.log(`Wrote ${file} (VRF ${manifest.vrf ?? 'default'}). Review it, then run: ${CLI} plan -f ${file}`);
+        }
+        return;
+      }
+      // To stdout: one YAML stream, a document per VRF, since a single
+      // manifest cannot hold both sides of an overlap.
+      process.stdout.write(manifests.map((m) => m.text).join('\n---\n'));
+      console.error('Pass -o FILE to write one file per VRF instead of one YAML stream.');
+      return;
     }
 
     // Said on stderr as well as in the file. Someone redirecting to -o may
@@ -395,6 +554,11 @@ async function main() {
         args.subscriptions?.length ? `--subscription ${args.subscriptions.join(',')}` : '',
         args.exclude?.length ? `--exclude ${args.exclude.join(',')}` : '',
         args.includeShared ? '--include-shared' : '',
+        args.hosts.length ? `--host ${args.hosts.join(',')}` : '',
+        args.vrfs?.length ? `--vrf ${args.vrfs.join(',')}` : '',
+        args.staticOnly ? '--static-only' : '',
+        args.includePublic ? '--include-public' : '',
+        args.site ? `--site ${args.site}` : '',
       ].filter(Boolean).join(' ');
       const scope = scopeFlags ? ` ${scopeFlags}` : '';
 
@@ -461,11 +625,39 @@ async function main() {
     }
   }
 
-  const options = resolveClientOptions(args.apiKey, args.url, args.organization);
+  // The agent's config is read before the API-key gate: a config error is
+  // the one thing the agent exits non-zero for, and it must be reported as
+  // itself rather than hidden behind "missing API key". The config may name
+  // the organization to act in; a flag still wins over it.
+  let agentConfig: ReturnType<typeof loadAgentConfig> | undefined;
+  if (args.command === 'agent') {
+    if (!args.config) {
+      console.error('Missing required --config <agent.yaml>');
+      process.exitCode = 1;
+      return;
+    }
+    try {
+      agentConfig = loadAgentConfig(readFileSync(args.config, 'utf-8'));
+    } catch (error) {
+      console.error(error instanceof AgentConfigError ? error.message : `Could not read ${args.config}: ${error instanceof Error ? error.message : String(error)}`);
+      process.exitCode = 1;
+      return;
+    }
+  }
+
+  const options = resolveClientOptions(args.apiKey, args.url, args.organization ?? agentConfig?.organization);
 
   if (!options.apiKey) {
     console.error('Missing API key. Set NXIP_API_KEY, or pass --api-key. Get one free at https://nx-ip.com/signup.');
     process.exitCode = 1;
+    return;
+  }
+
+  // Scheduled or once, the agent never prompts and never applies: it files
+  // change proposals, and exits non-zero only for the config errors above.
+  if (args.command === 'agent' && agentConfig) {
+    console.error(`nxip-agent: ${agentConfig.sources.reduce((n, s) => n + s.hosts.length, 0)} host(s) at site ${agentConfig.site}, ` + (agentConfig.schedule ? `schedule "${agentConfig.schedule.source}" (UTC)` : 'running once'));
+    await runAgent(agentConfig, defaultDependencies(options));
     return;
   }
 

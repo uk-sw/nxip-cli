@@ -83,8 +83,12 @@ Or run it without installing:
 npx nxip-cli scan aws
 ```
 
-`scan` and `scaffold` need no nxip account. `plan`, `apply` and `mcp` need an
-API key, free at [nx-ip.com](https://nx-ip.com/signup).
+`scan` and `scaffold` need no nxip account. `plan`, `apply`, `mcp` and `agent`
+need an API key, free at [nx-ip.com](https://nx-ip.com/signup).
+
+For on-premises networks there is a container, `ghcr.io/uk-sw/nxip-agent`,
+which is this CLI with Cisco devices as a source. See
+[Discovering Cisco networks](#discovering-cisco-networks-nxip-scan-cisco-and-the-nxip-agent-container).
 
 ## Scanning a cloud account (`nxip scan`)
 
@@ -334,7 +338,161 @@ The scan reads VPCs and subnets, not what is running inside them. It can
 tell you a `/16` is 3% carved; it cannot yet tell you the carved 3% is
 itself mostly idle.
 
-## Usage
+## Discovering Cisco networks (`nxip scan cisco` and the nxip-agent container)
+
+The cloud scan reads what a cloud API says. On premises the equivalent is
+the routing table: a subnet that is not routed is not a subnet, so the
+routing and interface tables of the routers are close to the whole address
+plan, including the static-only VLANs, transit links, management networks
+and per-VRF space that DHCP or a port scan would never show.
+
+`scan cisco` signs in to the devices you name over SSH with a read-only
+login, runs `show` commands, and produces the same report, collision
+findings and manifest as `scan aws`. It composes with the cloud sources in
+one run, so `scan cisco aws` reports a 10.1.20.0/24 that exists both on a
+core switch and in a VPC as one collision.
+
+### What nxip never does
+
+> nxip reads what your network already knows. It signs in to named
+> devices with a read-only credential you create, scope and revoke, and
+> reads their tables: routes, interfaces, VRFs, ARP. It never probes an
+> endpoint. No ping sweeps, no port scans, no traffic to any address it
+> has not been given a credential for.
+
+Concretely: the agent opens SSH sessions to the hosts in its config and
+runs `show` commands. It never enters `configure`, never needs `enable`,
+sends nothing to any other address, and talks to nxip outbound on 443
+only. Device credentials stay in the container's environment or a mounted
+file and are never sent to nxip.
+
+### The read-only user to create
+
+IOS and IOS-XE, privilege level 1, which is the default:
+
+```
+username readonly privilege 1 secret <password>
+```
+
+NX-OS, the built-in `network-operator` role:
+
+```
+username readonly password <password> role network-operator
+```
+
+Every command the source runs works at that level on a default
+configuration: `show version`, `show vrf`, `show ip interface`,
+`show ipv6 interface`, `show ip route vrf *` (or `show ip route` plus one
+per VRF where `vrf *` is not supported), `show ipv6 route`, and
+`show ip arp`, with `| json` variants on NX-OS. A refused command is
+reported and the device continues with what it returned.
+
+### One shot, the first five minutes
+
+```bash
+docker run --rm -it \
+  -e NXIP_SSH_USER=readonly -e NXIP_SSH_PASSWORD \
+  -v ~/.ssh/known_hosts:/agent/known_hosts:ro \
+  -v "$PWD":/out \
+  ghcr.io/uk-sw/nxip-agent scan cisco --host core1.example --host core2.example --emit-manifest -o /out/estate.yaml
+```
+
+Or from the CLI directly: `npx nxip-cli scan cisco --host core1.example`.
+Needs no nxip account. An unknown host key is asked about, as `ssh` does;
+the line to add to `known_hosts` is printed and nothing is written to the
+file.
+
+What the manifest holds:
+
+- **Pools**, one per RFC 1918 range touched, the smallest block covering
+  everything discovered inside it. This is a guess, said so in the file;
+  `--pool 10.0.0.0/14` (or `pools:` in the config) replaces it.
+- **Subnets**, one per distinct prefix across every device:
+  - a connected prefix on a VLAN interface or sub-interface is
+    `kind: vlan` with `interface`, `vlan_id` and `gateway` in metadata;
+  - a connected prefix on any other interface is `kind: interface`;
+  - any connected /30 or /31 is `kind: transit`;
+  - a static route is `kind: route` with `next_hop`;
+  - a route learned from OSPF, EIGRP, BGP, IS-IS or RIP is `kind: route`
+    with `protocol`; `--static-only` drops these;
+  - every entry carries `source: nxip-agent`, `network_id` (the device
+    serial), `device`, `vrf` and `route_type`, and `landing_point: false`.
+- A prefix seen on several devices is one subnet, attributed to the device
+  where it is connected, the others listed in `seen_on`.
+- Dropped and counted: the default route, /32 and /128 host routes,
+  summary and null routes, link-local, and public prefixes unless
+  `--include-public`.
+- A prefix inside a broader discovered prefix (a /24 VLAN inside a /16
+  static summary) nests under it with `parent:`, because nxip refuses
+  overlapping siblings and a routing table nests by nature.
+- Two VRFs with overlapping space produce one manifest per VRF
+  (`estate-default.yaml`, `estate-CUST-A.yaml`) and a note: nxip refuses
+  overlap inside one organisation, so each goes to its own.
+- ARP entries are counted per subnet in the report and the `--json`
+  output. The manifest has no address section, so nothing is written.
+
+### Scheduled: the container files proposals, a person approves
+
+```bash
+docker run -d --name nxip-agent --restart unless-stopped \
+  -v ./agent.yaml:/agent/agent.yaml:ro \
+  -v ./known_hosts:/agent/known_hosts:ro \
+  -e NXIP_API_KEY -e NXIP_SSH_PASSWORD \
+  ghcr.io/uk-sw/nxip-agent agent --config /agent/agent.yaml
+```
+
+```yaml
+# agent.yaml
+schedule: "0 2 * * *"          # cron, UTC; omit to run once and exit
+organization: org_...          # optional, for a provider acting in a customer
+environment: production        # default
+region: hq                     # the site; default on-prem
+pools: [10.0.0.0/14]           # optional; otherwise guessed and commented
+sources:
+  - type: cisco
+    hosts: [core1.example, core2.example:2222]
+    user: readonly              # or user_env: NXIP_SSH_USER
+    password_env: NXIP_SSH_PASSWORD
+    key_file: /agent/id_ed25519 # alternative to a password
+    known_hosts: /agent/known_hosts
+    vrfs: [default, CUST-A]     # optional filter
+    static_only: false
+    include_public: false
+exclude: [192.168.0.0/16]      # ranges never reported, as scan --exclude
+missing_runs: 3                # runs a prefix is missing before it is logged
+```
+
+Rules: no secret is ever a plain value in the file, only an environment
+variable name or a mounted path, and the agent refuses a config that
+tries. An unknown host key is a hard error in scheduled mode, logged with
+the fingerprint and the `known_hosts` line to add, so you add it on
+purpose.
+
+Each run compares what it discovered with what the organisation already
+holds (`GET /v1/pools` and `GET /v1/subnets`, matched on CIDR and on
+`metadata.network_id`):
+
+- a new pool or subnet becomes a change proposal (`POST /v1/proposals`)
+  holding every `create_pool` and `create_subnet`, titled with the site
+  and the date, for a person to approve in the dashboard. A proposal-only
+  key is enough and is the recommended key for the agent;
+- a prefix already in nxip produces nothing;
+- a prefix nxip holds with `source: nxip-agent` that has not been seen
+  for `missing_runs` runs is logged as no longer routed, and nothing is
+  proposed, because proposals cannot delete;
+- nothing new produces no proposal and one log line.
+
+Two details of the API shape the proposals. A proposal is previewed
+against the organisation as it is, so a subnet cannot be proposed in a
+pool the same proposal creates: on a first run the pools are proposed,
+and the subnets follow on the next run once the pools are approved, logged
+as `waiting_for_pool`. And a proposal holds at most 20 operations, so a
+large estate is filed as several proposals in one run, each listed in the
+log.
+
+The run log is stdout, one JSON object per run with counts, so
+`docker logs nxip-agent` is the whole observability story. The agent
+never prompts, never applies, and exits non-zero only on a config error.
 
 ```bash
 export NXIP_API_KEY="<your key>"   # or pass --api-key
@@ -655,6 +813,7 @@ the Terraform provider carries over directly:
 | `prefix_length` | Exactly one of these two | Size of the block to auto-allocate, letting nxip choose where it lands. |
 | `cidr` | Exactly one of these two | Register this exact block instead. What `nxip scan --emit-manifest` emits, so a discovered estate is recorded as it really is rather than reallocated. |
 | `kind` | No | Tags this subnet as a structural landing point for later auto-resolution. |
+| `landing_point` | No | Whether ordinary requests for the same environment, region and family are placed inside this subnet. Omitted, a kind-tagged top-level subnet defaults to `true`; `scan cisco` writes `false` on every entry so a discovered prefix never becomes a placement target. |
 | `description` | No | Free text. |
 | `metadata` | No | String key/value pairs, capped at 20 keys / 128-char keys / 256-char values, same limit the API itself enforces. |
 

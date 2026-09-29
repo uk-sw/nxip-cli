@@ -1,0 +1,4 @@
+# The image installs the published package, so nothing from the checkout
+# goes into the build context but the Dockerfile itself.
+*
+!Dockerfile

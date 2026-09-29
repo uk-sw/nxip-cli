@@ -22,6 +22,15 @@ const subnetEntrySchema = z
      */
     parent: z.string().min(1).optional(),
     kind: z.string().min(1).optional(),
+    /**
+     * Whether ordinary requests for the same environment, region and
+     * family are placed inside this subnet (the API's `landingPoint`,
+     * docs/specs/landing-point-flag.md). Omitted, the API defaults a
+     * kind-tagged top-level subnet to true. The Cisco source writes false on
+     * every entry: a discovered prefix records what is routed and must never
+     * become where new requests land.
+     */
+    landing_point: z.boolean().optional(),
     description: z.string().optional(),
     metadata: z.record(z.string(), z.string()).optional(),
   })
@@ -181,6 +190,7 @@ export function parseFullManifest(rawYaml: string): Manifest {
       region: entry.region,
       parentSubnetId: entry.parent_subnet_id,
       kind: entry.kind,
+      landingPoint: entry.landing_point,
       // Previously withheld as "CLI output only". That was defensible when
       // manifests were hand-written and the name was just a label, and
       // wrong once --emit-manifest started carrying real Azure resource
