@@ -2,14 +2,16 @@ import { readFileSync } from 'node:fs';
 import { parse } from 'yaml';
 import { z } from 'zod';
 import { discoverCisco, type CiscoDiscovery } from './cisco.js';
-import { listPools, listAllSubnets, previewSubnet, proposeChanges, type NxipClientOptions } from './client.js';
+import { listPools, listAllSubnets, listProposals, previewSubnet, proposeChanges, type NxipClientOptions } from './client.js';
 import { parseCron, nextRun, type CronSchedule } from './cron.js';
 import { readKnownHosts, type KnownHostEntry } from './known-hosts.js';
 import { parseFullManifest, type Manifest, type ManifestEntry } from './manifest.js';
 import { analyseDiscovery, mergeDiscoveries, renderDiscoveryManifests } from './scan.js';
 import { parseSharedRanges, type SharedRange } from './shared-ranges.js';
-import { parseIpv4Cidr, rangesOverlap } from './cidr.js';
-import type { NxipPool, NxipProposalOperation, NxipSubnet } from './types.js';
+import { contains, parseIpv4Cidr, rangesOverlap } from './cidr.js';
+import { parseIpv6Cidr } from './ipv6.js';
+import { mapWithConcurrency } from './concurrency.js';
+import type { NxipPool, NxipProposalOperation, NxipSubnet, PreviewResult } from './types.js';
 import type { DeviceSession, SshTarget } from './ssh.js';
 
 /**
@@ -221,16 +223,26 @@ export interface RunLog {
     new: number;
     waiting_for_pool: number;
     waiting_for_parent: number;
+    /** Already in a proposal nobody has decided yet, so not asked for again. */
+    awaiting_approval: number;
     would_fail: { cidr: string; reason: string; message: string }[];
     moved: { cidr: string; from: string; to: string }[];
   };
-  pools: { discovered: number; known: number; new: number };
+  pools: { discovered: number; known: number; new: number; awaiting_approval: number };
   hosts: number;
   dropped: Record<string, number>;
   /** VRFs left out of the proposal because they overlap another VRF. */
   skipped_vrfs: string[];
   proposals: { id: string; operations: number }[];
+  /** Proposals the API would not take, with how many operations went down with each. */
+  proposals_failed: { operations: number; message: string }[];
   no_longer_routed: string[];
+  /**
+   * Why the pending proposals could not be read, when they could not.
+   * Advisory: the run still files, so at worst it asks again for something
+   * already waiting.
+   */
+  pending_unread?: string;
   error?: string;
 }
 
@@ -250,13 +262,14 @@ export interface AgentDependencies {
   listAllSubnets: typeof listAllSubnets;
   previewSubnet: typeof previewSubnet;
   proposeChanges: typeof proposeChanges;
+  listProposals: typeof listProposals;
   readKnownHosts: (path: string) => KnownHostEntry[];
   openSession?: (target: SshTarget) => Promise<DeviceSession>;
   now: () => Date;
 }
 
 export function defaultDependencies(options: NxipClientOptions): AgentDependencies {
-  return { options, listPools, listAllSubnets, previewSubnet, proposeChanges, readKnownHosts, now: () => new Date() };
+  return { options, listPools, listAllSubnets, previewSubnet, proposeChanges, listProposals, readKnownHosts, now: () => new Date() };
 }
 
 // proposalService.ts MAX_OPERATIONS_PER_PROPOSAL in the API. A run with more
@@ -264,26 +277,40 @@ export function defaultDependencies(options: NxipClientOptions): AgentDependenci
 // still one approval for a person, and the log lists every id.
 const MAX_OPERATIONS_PER_PROPOSAL = 20;
 
+// At most this many previews in flight at once, the same ceiling `plan`
+// uses for the same call. It bounds the fan-out of a first run against a
+// real estate, which previews every prefix it found; a steady nightly run
+// previews only what is genuinely new, which is usually nothing. It bounds
+// requests in flight rather than requests per minute, so it is not itself a
+// rate limiter.
+const PREVIEW_CONCURRENCY = 4;
+
+// A ceiling so a paging bug cannot loop forever while reading the pending
+// queue. Far above any real number of undecided proposals.
+const MAX_PROPOSAL_PAGES = 20;
+
 /**
  * One run: read the devices, compare with what the organisation holds,
  * file a proposal for what is new. Nothing is applied here, ever.
+ *
+ * Never throws. Whatever went wrong, the log object comes back with the
+ * counts the run did manage to collect and `error` saying what stopped it:
+ * a run that reached nine devices and then lost the API is worth more in
+ * `docker logs` than a bare error message with no device, prefix or drop
+ * counts attached to it.
  */
 export async function runAgentOnce(config: AgentConfig, deps: AgentDependencies, state: AgentState): Promise<RunLog> {
-  const started = deps.now();
-  const log: RunLog = {
-    run: started.toISOString(),
-    site: config.site,
-    schedule: config.schedule?.source ?? null,
-    devices: { read: 0, failed: [] },
-    refused_commands: 0,
-    prefixes: { discovered: 0, known: 0, new: 0, waiting_for_pool: 0, waiting_for_parent: 0, would_fail: [], moved: [] },
-    pools: { discovered: 0, known: 0, new: 0 },
-    hosts: 0,
-    dropped: {},
-    skipped_vrfs: [],
-    proposals: [],
-    no_longer_routed: [],
-  };
+  const log = emptyLog(config, deps.now());
+  try {
+    await collectAndPropose(config, deps, state, log);
+  } catch (error) {
+    log.error = error instanceof Error ? error.message : String(error);
+  }
+  return log;
+}
+
+async function collectAndPropose(config: AgentConfig, deps: AgentDependencies, state: AgentState, log: RunLog): Promise<void> {
+  const started = new Date(log.run);
 
   // Every source is read before anything is compared, so one estate with
   // two source blocks is diffed as a whole.
@@ -358,18 +385,41 @@ export async function runAgentOnce(config: AgentConfig, deps: AgentDependencies,
 
   const existingPools = await deps.listPools(deps.options);
   const existingSubnets = await deps.listAllSubnets(deps.options);
+  const pending = await readPendingOperations(config, deps, log);
   const operations: NxipProposalOperation[] = [];
 
-  // Pools: known by CIDR, or by key, since one pool per (environment,
-  // region, family) is the rule and a different block for the same key
-  // means the operator's plan already covers this site.
+  // Pools: known by its own CIDR, or by an existing pool for the same
+  // (environment, region, family) that already covers the block. One pool
+  // per key is the rule, so a wider pool for this site means the operator's
+  // plan already covers what was discovered and nothing needs proposing.
+  //
+  // The containment test is the point. Matching on the key alone let any
+  // pool at all for the site suppress the proposal, so a 192.168.0.0/16
+  // pool silently swallowed a proposed 10.0.0.0/14: the pool was never
+  // asked for, and every subnet under it then failed its preview with "no
+  // pool covers this block" for a pool the agent had decided not to ask for.
   log.pools.discovered = manifest.pools.length;
   const poolKnown = (pool: Manifest['pools'][number]): NxipPool | undefined =>
-    existingPools.find((p) => p.cidr === pool.body.cidr || (p.environment === pool.body.environment && p.region === pool.body.region && p.family === pool.body.family));
+    existingPools.find(
+      (p) =>
+        p.cidr === pool.body.cidr ||
+        (p.environment === pool.body.environment &&
+          p.region === pool.body.region &&
+          p.family === pool.body.family &&
+          covers(p.cidr, pool.body.cidr))
+    );
   const newPoolKeys = new Set<string>();
   for (const pool of manifest.pools) {
     if (poolKnown(pool)) {
       log.pools.known += 1;
+      continue;
+    }
+    // Already asked for and nobody has decided yet: asking again would file
+    // the same operation a second time, and a week of that is seven
+    // identical proposals for one person to work through.
+    if (pending.has(`create_pool|${pool.body.cidr}`)) {
+      log.pools.awaiting_approval += 1;
+      newPoolKeys.add(`${pool.body.environment}|${pool.body.region}|${pool.body.family}`);
       continue;
     }
     log.pools.new += 1;
@@ -384,6 +434,10 @@ export async function runAgentOnce(config: AgentConfig, deps: AgentDependencies,
   const knownNames = new Map<string, NxipSubnet>();
   const newNames = new Set<string>();
 
+  // Which entries are candidates, in manifest order. The order matters:
+  // parents come before their children, so knownNames is complete by the
+  // time a child looks its parent up.
+  const candidates: ManifestEntry[] = [];
   for (const entry of manifest.subnets) {
     const cidr = entry.body.cidr;
     if (!cidr) continue;
@@ -400,6 +454,14 @@ export async function runAgentOnce(config: AgentConfig, deps: AgentDependencies,
       continue;
     }
 
+    // Already waiting for a person. Not new: "new" means new against what
+    // nxip holds and against what has already been asked for.
+    if (pending.has(`create_subnet|${cidr}`)) {
+      log.prefixes.awaiting_approval += 1;
+      newNames.add(entry.name);
+      continue;
+    }
+
     if (entry.parent) {
       const parent = knownNames.get(entry.parent);
       if (!parent) {
@@ -410,7 +472,7 @@ export async function runAgentOnce(config: AgentConfig, deps: AgentDependencies,
         newNames.add(entry.name);
         continue;
       }
-      await consider({ ...entry, body: { ...entry.body, parentSubnetId: parent.id } });
+      candidates.push({ ...entry, body: { ...entry.body, parentSubnetId: parent.id } });
       continue;
     }
 
@@ -420,17 +482,36 @@ export async function runAgentOnce(config: AgentConfig, deps: AgentDependencies,
       newNames.add(entry.name);
       continue;
     }
-    await consider(entry);
+    candidates.push(entry);
   }
 
-  async function consider(entry: ManifestEntry): Promise<void> {
-    // Previewed one at a time so one bad entry (a prefix outside every
-    // pool, a tier limit) is logged and the rest are still proposed. The
-    // API refuses a whole proposal when any operation would fail.
-    const preview = await deps.previewSubnet(deps.options, entry.body);
-    if (!preview.wouldSucceed) {
-      log.prefixes.would_fail.push({ cidr: entry.body.cidr ?? '', reason: preview.reason, message: preview.message });
-      return;
+  // Previewed one at a time so one bad entry (a prefix outside every pool,
+  // a tier limit) is logged and the rest are still proposed: the API
+  // refuses a whole proposal when any one operation would fail. A few at a
+  // time rather than one after another, since a first run against a real
+  // estate has hundreds of prefixes to ask about and every later run has
+  // almost none.
+  const verdicts = await mapWithConcurrency<ManifestEntry, PreviewVerdict>(candidates, PREVIEW_CONCURRENCY, async (entry) => {
+    try {
+      return { entry, preview: await deps.previewSubnet(deps.options, entry.body) };
+    } catch (error) {
+      // A preview that could not be answered is not a "no". It is recorded
+      // against the prefix and the run carries on: letting it escape threw
+      // away every other prefix's proposal, and the counts with it, because
+      // one request timed out.
+      return { entry, failed: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  for (const verdict of verdicts) {
+    const { entry } = verdict;
+    if ('failed' in verdict) {
+      log.prefixes.would_fail.push({ cidr: entry.body.cidr ?? '', reason: 'preview-failed', message: verdict.failed });
+      continue;
+    }
+    if (!verdict.preview.wouldSucceed) {
+      log.prefixes.would_fail.push({ cidr: entry.body.cidr ?? '', reason: verdict.preview.reason, message: verdict.preview.message });
+      continue;
     }
     log.prefixes.new += 1;
     newNames.add(entry.name);
@@ -459,14 +540,79 @@ export async function runAgentOnce(config: AgentConfig, deps: AgentDependencies,
   for (let at = 0; at < operations.length; at += MAX_OPERATIONS_PER_PROPOSAL) {
     const chunk = operations.slice(at, at + MAX_OPERATIONS_PER_PROPOSAL);
     const part = operations.length > MAX_OPERATIONS_PER_PROPOSAL ? ` (part ${Math.floor(at / MAX_OPERATIONS_PER_PROPOSAL) + 1})` : '';
-    const proposal = await deps.proposeChanges(deps.options, {
-      reason: `nxip-agent ${config.site} ${date}: ${log.pools.new} new pool${log.pools.new === 1 ? '' : 's'}, ${log.prefixes.new} new subnet${log.prefixes.new === 1 ? '' : 's'} discovered on Cisco devices${part}`,
-      operations: chunk,
-    });
-    log.proposals.push({ id: proposal.id, operations: chunk.length });
+    try {
+      const proposal = await deps.proposeChanges(deps.options, {
+        reason: `nxip-agent ${config.site} ${date}: ${log.pools.new} new pool${log.pools.new === 1 ? '' : 's'}, ${log.prefixes.new} new subnet${log.prefixes.new === 1 ? '' : 's'} discovered on Cisco devices${part}`,
+        operations: chunk,
+      });
+      log.proposals.push({ id: proposal.id, operations: chunk.length });
+    } catch (error) {
+      // One part refused or lost does not take the other parts with it.
+      // Whatever is filed is filed, and the log names what was not, with
+      // how many operations went down with it.
+      log.proposals_failed.push({ operations: chunk.length, message: error instanceof Error ? error.message : String(error) });
+    }
   }
+}
 
-  return log;
+/** One entry's preview: an answer, or the reason there was no answer. */
+type PreviewVerdict = { entry: ManifestEntry; preview: PreviewResult } | { entry: ManifestEntry; failed: string };
+
+/**
+ * Whether an existing pool's block covers a proposed one. Both families,
+ * since a v6 pool is proposed the same way a v4 one is.
+ */
+function covers(outer: string, inner: string | undefined): boolean {
+  if (!inner) return false;
+  if (outer === inner) return true;
+  if (outer.includes(':') !== inner.includes(':')) return false;
+  if (outer.includes(':')) {
+    const a = parseIpv6Cidr(outer);
+    const b = parseIpv6Cidr(inner);
+    return a !== null && b !== null && b.start >= a.start && b.end <= a.end;
+  }
+  const a = parseIpv4Cidr(outer);
+  const b = parseIpv4Cidr(inner);
+  return a !== null && b !== null && contains(a, b);
+}
+
+/**
+ * The operations this agent has already asked for that nobody has decided.
+ *
+ * Nothing consulted the pending queue, so an unapproved proposal was filed
+ * again on every run: a week of nobody approving left seven identical
+ * proposals, each of which a person then has to work through. "New" has to
+ * mean new against what nxip holds *and* against what is already waiting.
+ *
+ * Best effort, and fails open on purpose. A key that may not read
+ * proposals, or an API that is briefly down, must not stop a run filing:
+ * a duplicate proposal is a nuisance, a discovery nobody ever hears about
+ * is the thing the agent exists to prevent. A failed read is named in the
+ * log and the run goes on exactly as it did before this existed.
+ *
+ * Only this agent's own asks count. A person's pending proposal for the
+ * same block is their business, and whether both can be approved is the
+ * API's decision, not this one's.
+ */
+async function readPendingOperations(config: AgentConfig, deps: AgentDependencies, log: RunLog): Promise<Set<string>> {
+  const pending = new Set<string>();
+  try {
+    for (let page = 1; page <= MAX_PROPOSAL_PAGES; page++) {
+      const response = await deps.listProposals(deps.options, { status: 'PENDING', limit: 100, page });
+      for (const proposal of response.data ?? []) {
+        for (const operation of proposal.operations ?? []) {
+          const input = operation.input as { cidr?: unknown; region?: unknown; metadata?: { source?: unknown } | null };
+          if (input?.metadata?.source !== 'nxip-agent' || input.region !== config.site) continue;
+          if (typeof input.cidr === 'string') pending.add(`${operation.type}|${input.cidr}`);
+        }
+      }
+      const totalPages = response.meta?.totalPages;
+      if (typeof totalPages !== 'number' || page >= totalPages) break;
+    }
+  } catch (error) {
+    log.pending_unread = error instanceof Error ? error.message : String(error);
+  }
+  return pending;
 }
 
 /**
@@ -511,12 +657,13 @@ function emptyLog(config: AgentConfig, at: Date): RunLog {
     schedule: config.schedule?.source ?? null,
     devices: { read: 0, failed: [] },
     refused_commands: 0,
-    prefixes: { discovered: 0, known: 0, new: 0, waiting_for_pool: 0, waiting_for_parent: 0, would_fail: [], moved: [] },
-    pools: { discovered: 0, known: 0, new: 0 },
+    prefixes: { discovered: 0, known: 0, new: 0, waiting_for_pool: 0, waiting_for_parent: 0, awaiting_approval: 0, would_fail: [], moved: [] },
+    pools: { discovered: 0, known: 0, new: 0, awaiting_approval: 0 },
     hosts: 0,
     dropped: {},
     skipped_vrfs: [],
     proposals: [],
+    proposals_failed: [],
     no_longer_routed: [],
   };
 }

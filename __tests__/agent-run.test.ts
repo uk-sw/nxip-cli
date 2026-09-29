@@ -104,10 +104,22 @@ interface FakeApi {
   previews: unknown[];
 }
 
+/** A PENDING proposal as GET /v1/proposals returns it, holding these operations. */
+function pendingProposal(operations: NxipProposalOperation[]): NxipProposal {
+  return {
+    id: 'prop_pending',
+    status: 'PENDING',
+    operations: operations.map((operation) => ({ ...operation, input: operation.input as unknown as Record<string, unknown>, preview: {}, result: null })),
+  } as unknown as NxipProposal;
+}
+
 function fakeApi(options: {
   pools?: NxipPool[];
   subnets?: NxipSubnet[];
   preview?: (body: unknown) => PreviewResult;
+  propose?: () => never;
+  proposalsPending?: NxipProposal[];
+  listProposals?: AgentDependencies['listProposals'];
   outputs?: Map<string, string>;
   openSession?: AgentDependencies['openSession'];
   now?: () => Date;
@@ -125,9 +137,13 @@ function fakeApi(options: {
       return options.preview?.(body) ?? ({ wouldSucceed: true, cidr: body.cidr ?? '', poolId: 'pool_1' } as unknown as PreviewResult);
     },
     proposeChanges: async (_options, body) => {
+      options.propose?.();
       proposals.push(body);
       return { id: `prop_${proposals.length}`, status: 'PENDING' } as unknown as NxipProposal;
     },
+    listProposals:
+      options.listProposals ??
+      (async () => ({ data: options.proposalsPending ?? [], meta: { total: 0, page: 1, limit: 100, totalPages: 1 } })),
     readKnownHosts: () => [],
     openSession: options.openSession ?? (async () => new TranscriptSession(outputs)),
     now: options.now ?? (() => new Date('2026-09-29T02:00:00.000Z')),
@@ -162,7 +178,7 @@ describe('what a run proposes', () => {
     });
 
     expect(log.prefixes).toMatchObject({ discovered: 1, known: 0, new: 1 });
-    expect(log.pools).toEqual({ discovered: 1, known: 1, new: 0 });
+    expect(log.pools).toEqual({ discovered: 1, known: 1, new: 0, awaiting_approval: 0 });
     expect(log.proposals).toEqual([{ id: 'prop_1', operations: 1 }]);
     expect(api.proposals[0].reason).toContain('nxip-agent hq 2026-09-29');
   });
@@ -176,6 +192,27 @@ describe('what a run proposes', () => {
     // The subnet waits for the pool's approval: a proposal is previewed
     // against the organisation as it is, and the pool does not exist yet.
     expect(api.proposals[0].operations[0].input).toMatchObject({ cidr: '10.50.0.0/16', region: 'hq' });
+  });
+
+  it('asks for the pool when the only one for this site covers a different block', async () => {
+    // One pool per (environment, region, family) is the rule, but a
+    // 192.168.0.0/16 pool is not a home for a 10.50.0.0/16 plan. Treating
+    // it as one meant the pool was never asked for and every subnet under
+    // it then failed its preview with "no pool covers this block".
+    const api = fakeApi({ pools: [pool('192.168.0.0/16')] });
+    const log = await runAgentOnce(config(), api.deps, newAgentState());
+
+    expect(log.pools).toMatchObject({ discovered: 1, known: 0, new: 1 });
+    expect(api.proposals[0].operations.map((o) => o.type)).toEqual(['create_pool']);
+    expect(api.proposals[0].operations[0].input).toMatchObject({ cidr: '10.50.0.0/16' });
+  });
+
+  it('asks for no pool when an existing one for this site already covers the block', async () => {
+    const api = fakeApi({ pools: [pool('10.0.0.0/8')] });
+    const log = await runAgentOnce(config(), api.deps, newAgentState());
+
+    expect(log.pools).toMatchObject({ known: 1, new: 0 });
+    expect(api.proposals[0].operations.map((o) => o.type)).toEqual(['create_subnet']);
   });
 
   it('proposes nothing for a prefix nxip already holds at the same CIDR and network_id', async () => {
@@ -247,6 +284,83 @@ describe('what a run proposes', () => {
     expect(log.proposals.map((p) => p.id)).toEqual(['prop_1', 'prop_2']);
   });
 
+  it('logs an entry whose preview could not be answered and still proposes the rest', async () => {
+    // A timeout on one preview used to escape the whole run, so every other
+    // prefix's proposal and every count went with it, and `docker logs`
+    // held one error message and nothing else.
+    const lines = ['C        10.50.1.0/24 is directly connected, GigabitEthernet0/1'];
+    const api = fakeApi({
+      outputs: labDevice(`${ROUTES}\n${lines.join('\n')}`),
+      preview: (body) => {
+        if ((body as { cidr?: string }).cidr === '10.50.0.0/24') throw new Error('fetch failed: ETIMEDOUT');
+        return { wouldSucceed: true } as unknown as PreviewResult;
+      },
+    });
+    const log = await runAgentOnce(config(), api.deps, newAgentState());
+
+    expect(log.error).toBeUndefined();
+    expect(log.prefixes.would_fail).toEqual([
+      { cidr: '10.50.0.0/24', reason: 'preview-failed', message: 'fetch failed: ETIMEDOUT' },
+    ]);
+    expect(log.prefixes.new).toBe(1);
+    expect(api.proposals).toHaveLength(1);
+    expect(api.proposals[0].operations.map((o) => (o.input as { cidr?: string }).cidr)).toEqual(['10.50.1.0/24']);
+  });
+
+  it('records a proposal the API would not take, and still emits the run\'s counts', async () => {
+    const api = fakeApi({
+      propose: () => {
+        throw new Error('nxip API returned unexpected status 503');
+      },
+    });
+    const log = await runAgentOnce(config(), api.deps, newAgentState());
+
+    expect(log.proposals).toEqual([]);
+    expect(log.proposals_failed).toEqual([{ operations: 1, message: 'nxip API returned unexpected status 503' }]);
+    // The counts survive, which is the whole reason the run log exists.
+    expect(log.devices.read).toBe(1);
+    expect(log.prefixes.discovered).toBe(1);
+    expect(log.prefixes.new).toBe(1);
+  });
+
+  it('carries the counts it did collect even when the run failed outright', async () => {
+    // A run that read nine devices and then lost the API is worth more in
+    // `docker logs` than a bare error with nothing attached to it.
+    const api = fakeApi();
+    api.deps.listAllSubnets = async () => {
+      throw new Error('nxip API returned unexpected status 503');
+    };
+    const log = await runAgentOnce(config(), api.deps, newAgentState());
+
+    expect(log.error).toBe('nxip API returned unexpected status 503');
+    expect(log.devices.read).toBe(1);
+    expect(log.prefixes.discovered).toBe(1);
+    expect(log.dropped.hostRoute).toBe(1);
+    expect(log.proposals).toEqual([]);
+  });
+
+  it('previews a few at a time rather than one after another or all at once', async () => {
+    // A first run against a real estate has hundreds of prefixes to ask
+    // about; the caller's own API is on the other end of it.
+    const lines = Array.from({ length: 30 }, (_, i) => `C        10.50.${i + 1}.0/24 is directly connected, GigabitEthernet0/${i}`);
+    let inFlight = 0;
+    let peak = 0;
+    const api = fakeApi({ outputs: labDevice(`${ROUTES}\n${lines.join('\n')}`) });
+    const preview = api.deps.previewSubnet;
+    api.deps.previewSubnet = async (clientOptions, body) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      inFlight -= 1;
+      return preview(clientOptions, body);
+    };
+    const log = await runAgentOnce(config(), api.deps, newAgentState());
+
+    expect(log.prefixes.new).toBe(31);
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(4);
+  });
+
   it('never applies: every operation it files is a proposal, and it imports nothing that creates', () => {
     // The dependency surface is the whole of what a run can reach, and it
     // holds no create call. This guards the import list too, so a future
@@ -299,6 +413,98 @@ sources:
     const log = await runAgentOnce(config(`${CONFIG_YAML}exclude: [10.50.0.0/16]\n`), api.deps, newAgentState());
 
     expect(log.prefixes.discovered).toBe(0);
+    expect(api.proposals).toEqual([]);
+  });
+});
+
+describe('proposals already waiting for a person', () => {
+  const alreadyAsked = (cidr = '10.50.0.0/24') =>
+    pendingProposal([
+      {
+        type: 'create_subnet',
+        input: { cidr, family: 'IPV4', environment: 'production', region: 'hq', metadata: { source: 'nxip-agent' } },
+      } as unknown as NxipProposalOperation,
+    ]);
+
+  it('asks once and not again while nobody has approved it', async () => {
+    // A week of nobody approving used to leave seven identical proposals,
+    // each of which a person then has to work through one at a time.
+    const api = fakeApi({ proposalsPending: [alreadyAsked()] });
+    const log = await runAgentOnce(config(), api.deps, newAgentState());
+
+    expect(api.proposals).toEqual([]);
+    expect(api.previews).toEqual([]);
+    expect(log.prefixes.awaiting_approval).toBe(1);
+    expect(log.prefixes.new).toBe(0);
+    expect(log.pending_unread).toBeUndefined();
+  });
+
+  it('skips a pool it has already asked for too', async () => {
+    const api = fakeApi({
+      pools: [],
+      proposalsPending: [
+        pendingProposal([
+          { type: 'create_pool', input: { cidr: '10.50.0.0/16', family: 'IPV4', environment: 'production', region: 'hq', metadata: { source: 'nxip-agent' } } } as unknown as NxipProposalOperation,
+        ]),
+      ],
+    });
+    const log = await runAgentOnce(config(), api.deps, newAgentState());
+
+    expect(api.proposals).toEqual([]);
+    expect(log.pools.awaiting_approval).toBe(1);
+    expect(log.pools.new).toBe(0);
+    // And the subnet still waits for that pool rather than being proposed
+    // against a pool that does not exist yet.
+    expect(log.prefixes.waiting_for_pool).toBe(1);
+  });
+
+  it('still asks when the pending proposal belongs to another site or another author', async () => {
+    const elsewhere = pendingProposal([
+      { type: 'create_subnet', input: { cidr: '10.50.0.0/24', region: 'branch', metadata: { source: 'nxip-agent' } } } as unknown as NxipProposalOperation,
+      { type: 'create_subnet', input: { cidr: '10.50.0.0/24', region: 'hq', metadata: { source: 'terraform' } } } as unknown as NxipProposalOperation,
+    ]);
+    const api = fakeApi({ proposalsPending: [elsewhere] });
+    const log = await runAgentOnce(config(), api.deps, newAgentState());
+
+    expect(log.prefixes.awaiting_approval).toBe(0);
+    expect(api.proposals).toHaveLength(1);
+  });
+
+  it('files as before, and says so, when the pending queue cannot be read', async () => {
+    // Fails open on purpose: a key that may not read proposals, or an API
+    // briefly down, must not stop a run filing. A duplicate proposal is a
+    // nuisance; a discovery nobody hears about is what the agent exists to
+    // prevent.
+    const api = fakeApi({
+      listProposals: async () => {
+        throw new Error('nxip API returned unexpected status 403');
+      },
+    });
+    const log = await runAgentOnce(config(), api.deps, newAgentState());
+
+    expect(log.pending_unread).toBe('nxip API returned unexpected status 403');
+    expect(log.error).toBeUndefined();
+    expect(api.proposals).toHaveLength(1);
+  });
+
+  it('reads every page of the pending queue', async () => {
+    const pages = [
+      { data: [pendingProposal([{ type: 'create_subnet', input: { cidr: '10.99.0.0/24', region: 'hq', metadata: { source: 'nxip-agent' } } } as unknown as NxipProposalOperation])], meta: { total: 2, page: 1, limit: 100, totalPages: 2 } },
+      { data: [alreadyAsked()], meta: { total: 2, page: 2, limit: 100, totalPages: 2 } },
+    ];
+    const asked: number[] = [];
+    const api = fakeApi({
+      listProposals: async (_options, query) => {
+        asked.push(query?.page ?? 1);
+        return pages[(query?.page ?? 1) - 1];
+      },
+    });
+    const log = await runAgentOnce(config(), api.deps, newAgentState());
+
+    expect(asked).toEqual([1, 2]);
+    // The one on page two is the one that matters, so a single-page read
+    // would have filed it again.
+    expect(log.prefixes.awaiting_approval).toBe(1);
     expect(api.proposals).toEqual([]);
   });
 });
