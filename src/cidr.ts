@@ -107,3 +107,37 @@ export function unionSize(ranges: Ipv4Range[]): number {
   }
   return total;
 }
+
+/**
+ * The smallest aligned block containing every range given, or null for
+ * none. This is how the Cisco source guesses a pool: shorten the prefix
+ * until one block holds both the lowest and the highest address seen.
+ */
+export function coveringIpv4Block(ranges: Ipv4Range[]): Ipv4Range | null {
+  if (ranges.length === 0) return null;
+  const low = Math.min(...ranges.map((r) => r.start));
+  const high = Math.max(...ranges.map((r) => r.end));
+  for (let prefixLength = 32; prefixLength >= 0; prefixLength--) {
+    const size = 2 ** (32 - prefixLength);
+    const start = Math.floor(low / size) * size;
+    if (start + size - 1 >= high) {
+      return { start, end: start + size - 1, prefixLength, size, cidr: `${intToIpv4(start)}/${prefixLength}` };
+    }
+  }
+  return null;
+}
+
+/**
+ * The three RFC 1918 blocks, which is what "private" means for a routing
+ * table. A pool guessed from discovered prefixes never grows past the one
+ * it sits in: a /8 of 10-space and a /12 of 172.16-space are two plans, and
+ * one block covering both would be 0.0.0.0/1.
+ */
+export const RFC1918_BLOCKS: Ipv4Range[] = ['10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'].map(
+  (cidr) => parseIpv4Cidr(cidr)!
+);
+
+/** The RFC 1918 block a range sits inside, or null for public space. */
+export function rfc1918BlockOf(range: Ipv4Range): Ipv4Range | null {
+  return RFC1918_BLOCKS.find((block) => contains(block, range)) ?? null;
+}
