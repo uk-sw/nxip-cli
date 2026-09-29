@@ -47,8 +47,19 @@ export interface HostKeyPolicy {
 
 export class SshError extends Error {}
 
-/** A line ending in the two characters Cisco prompts end in. */
-const PROMPT_LINE = /(^|[\r\n])([^\r\n]*[>#])\s*$/;
+/**
+ * A line ending in the two characters Cisco prompts end in, with nothing
+ * after it but spaces.
+ *
+ * The trailing class is [ \t] and deliberately not \s: \s matches a newline,
+ * and a device whose `banner motd` is drawn with a border of hashes ends a
+ * banner line in "#" followed by a newline. That looked exactly like the
+ * first prompt, so the prompt text became the banner's border, every later
+ * command waited for a line that never came again, and a healthy device
+ * failed the run with "no prompt". A prompt is what the device stops at, so
+ * it is never followed by a newline.
+ */
+const PROMPT_LINE = /(^|[\r\n])([^\r\n]*[>#])[ \t]*$/;
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 

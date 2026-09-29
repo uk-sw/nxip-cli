@@ -88,7 +88,18 @@ export async function startFakeDevice(options: FakeDeviceOptions): Promise<FakeD
         session.on('pty', (accepted) => accepted?.());
         session.on('shell', (acceptShell) => {
           const stream = acceptShell();
-          stream.write(`${options.banner ?? ''}\r\n${prompt}`);
+          // The banner and the prompt are two writes with a gap between
+          // them, which is how a device sends them: the banner comes from
+          // the login process and the prompt from the exec shell that
+          // follows it. Sending both in one write would let a prompt hunt
+          // that matches the last banner line still find the real prompt in
+          // the same chunk, and hide the bug this reproduces.
+          if (options.banner) {
+            stream.write(`${options.banner.replace(/\n/g, '\r\n')}\r\n`);
+            setTimeout(() => stream.write(prompt), 25);
+          } else {
+            stream.write(`\r\n${prompt}`);
+          }
           let buffer = '';
           stream.on('data', (chunk: Buffer) => {
             buffer += chunk.toString('utf-8');

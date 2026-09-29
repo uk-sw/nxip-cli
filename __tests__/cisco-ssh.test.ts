@@ -50,13 +50,20 @@ afterEach(async () => {
   device = null;
 });
 
-async function connect(fake: FakeDevice, knownHosts = fake.knownHosts) {
+async function connect(fake: FakeDevice, knownHosts = fake.knownHosts, timeoutMs = 15_000) {
   return openShellSession(
     { host: '127.0.0.1', port: fake.port, username: 'readonly', password: 'secret' },
     { knownHosts, onUnknown: async () => false },
-    { timeoutMs: 15_000 }
+    { timeoutMs }
   );
 }
+
+// A hash-bordered `banner motd`, which is what a great many production
+// devices carry. Every line of the border ends in the same character a
+// Cisco prompt ends in.
+const HASH_BANNER = `${'#'.repeat(50)}
+#  AUTHORISED ACCESS ONLY. Activity is logged.   #
+${'#'.repeat(50)}`;
 
 describe('the SSH transport against an ssh2 server', () => {
   it('sends terminal length 0 before anything else, then reads the device', async () => {
@@ -77,6 +84,31 @@ describe('the SSH transport against an ssh2 server', () => {
     expect(tables.identity.serial).toBe('FTX0000TEST');
     expect(tables.routes.map((r) => r.prefix)).toEqual(['10.60.0.0/24', '10.60.0.1/32']);
     expect(tables.interfaces.map((i) => i.prefix)).toEqual(['10.60.0.0/24']);
+  });
+
+  it('finds the prompt behind a hash-bordered banner and still reads the device', async () => {
+    // The banner arrives in its own write, before the prompt, exactly as a
+    // device sends it. A prompt hunt that accepts a line ending in "#"
+    // followed by a newline takes the banner's border for the prompt, and
+    // every command after it then waits for a line the device never prints
+    // again: a healthy device fails the whole run with "no prompt".
+    // The timeout is short so the failure is a fast one rather than a
+    // minute of waiting.
+    device = await startFakeDevice({ outputs: iosOutputs(), banner: HASH_BANNER });
+    const session = await connect(device, device.knownHosts, 4_000);
+    let tables;
+    try {
+      tables = await readDevice(session, '127.0.0.1');
+    } finally {
+      await session.close();
+    }
+
+    expect(device.commands[0]).toBe('terminal length 0');
+    expect(tables.identity.hostname).toBe('router1');
+    expect(tables.routes.map((r) => r.prefix)).toEqual(['10.60.0.0/24', '10.60.0.1/32']);
+    // The banner is not output either: it arrived before the first command
+    // was ever sent, so nothing it says can reach a parser.
+    expect(tables.identity.serial).toBe('FTX0000TEST');
   });
 
   it('records a refused command and carries on with the rest of the device', async () => {
