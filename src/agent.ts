@@ -370,7 +370,12 @@ export async function runAgentOnce(config: AgentConfig, deps: AgentDependencies,
   const existingByCidr = new Map(existingSubnets.map((s) => [s.cidr, s]));
   const knownNames = new Map<string, NxipSubnet>();
   const newNames = new Set<string>();
-  const discoveredCidrs = new Set<string>();
+  // Everything the devices actually said, not just what reached the
+  // manifest. The manifest holds one VRF when two overlap, and leaves out
+  // anything outside the configured pools; those prefixes are still routed,
+  // and calling them "no longer routed" below would be a lie the operator
+  // acts on.
+  const discoveredCidrs = new Set<string>(details?.prefixes.map((prefix) => prefix.cidr) ?? []);
 
   for (const entry of manifest.subnets) {
     const cidr = entry.body.cidr;
