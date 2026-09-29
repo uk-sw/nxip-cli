@@ -1,6 +1,6 @@
 import { overlapKind, parseIpv4Cidr, unionSize, type Ipv4Range, type OverlapKind } from './cidr.js';
 import { DEFAULT_SHARED_RANGES, isExpectedlyShared, type SharedRange } from './shared-ranges.js';
-import { formatCiscoSection, manifestGroups, renderCiscoSections, type CiscoDetails, type DiscoveredPrefix } from './cisco.js';
+import { formatCiscoSection, manifestGroups, mergeCiscoDetails, renderCiscoSections, type CiscoDetails, type DiscoveredPrefix } from './cisco.js';
 
 // What a discovery source hands back. Deliberately not AWS-shaped: the
 // analysis below knows nothing about EC2, so a future Azure or GCP source
@@ -89,25 +89,35 @@ export interface MergedDiscovery {
 }
 
 export function mergeDiscoveries(discoveries: Discovery[]): MergedDiscovery {
-  // One Cisco source per run today, so its details pass through whole. If
-  // a run ever names cisco twice, the second's devices and prefixes are
-  // appended to the first's rather than dropped.
+  // Often one Cisco source, but a config with two `sources:` blocks gives
+  // two, and they are one estate: mergeCiscoDetails deduplicates the
+  // prefixes both of them routed rather than carrying each twice.
   const ciscoParts = discoveries.map((d) => d.cisco).filter((c): c is CiscoDetails => c !== undefined);
-  const cisco = ciscoParts.length === 0
-    ? undefined
-    : ciscoParts.reduce((merged, part) => ({
-        ...merged,
-        devices: [...merged.devices, ...part.devices],
-        failures: [...merged.failures, ...part.failures],
-        prefixes: [...merged.prefixes, ...part.prefixes],
-        hosts: merged.hosts + part.hosts,
-        overlappingVrfs: [...new Set([...merged.overlappingVrfs, ...part.overlappingVrfs])],
-      }));
+  const cisco = mergeCiscoDetails(ciscoParts);
+
+  // The Cisco source emits one network per prefix, keyed `vrf/cidr`, so the
+  // same duplicate reached the collision analysis as two networks claiming
+  // exactly the same block and the estate was reported as colliding with
+  // itself. Deduped on the same key the prefixes are.
+  const networks: DiscoveredNetwork[] = [];
+  const ciscoNetworkIds = new Set<string>();
+  for (const discovery of discoveries) {
+    for (const network of discovery.networks) {
+      // Stamping the provider here rather than in each source module keeps
+      // the scanners ignorant of whether they are running alone or
+      // alongside another.
+      const provider = network.provider ?? discovery.provider;
+      if (provider === 'cisco') {
+        if (ciscoNetworkIds.has(network.id)) continue;
+        ciscoNetworkIds.add(network.id);
+      }
+      networks.push({ ...network, provider });
+    }
+  }
+
   return {
     sources: discoveries.map((d) => ({ provider: d.provider, account: d.account, regions: d.regions })),
-    // Stamping the provider here rather than in each source module keeps the
-    // scanners ignorant of whether they are running alone or alongside another.
-    networks: discoveries.flatMap((d) => d.networks.map((n) => ({ ...n, provider: n.provider ?? d.provider }))),
+    networks,
     subnets: discoveries.flatMap((d) => d.subnets.map((s) => ({ ...s, provider: s.provider ?? d.provider }))),
     ...(cisco ? { cisco } : {}),
   };

@@ -409,6 +409,63 @@ export function dedupePrefixes(perDevice: DiscoveredPrefix[][]): DiscoveredPrefi
 }
 
 /**
+ * Several source blocks' worth of Cisco discovery as one estate.
+ *
+ * Deduplication is the whole of it. Prefixes are deduped inside one
+ * discoverCisco call, so a prefix routed by devices in two `sources:`
+ * blocks arrived at the merge twice and nothing downstream looked again:
+ * the manifest declared the same CIDR twice, and scheduled mode filed two
+ * create_subnet operations for it in one proposal. The API refuses
+ * colliding operations, so the run threw, filed nothing, and did the same
+ * again the next night, and the night after.
+ */
+export function mergeCiscoDetails(parts: CiscoDetails[]): CiscoDetails | undefined {
+  if (parts.length === 0) return undefined;
+  if (parts.length === 1) return parts[0];
+
+  const prefixes = dedupePrefixes(parts.map((part) => part.prefixes));
+
+  // `hosts` is a count rather than an attribute of whichever side won the
+  // attribution, so it cannot simply come along with the winner. Two blocks
+  // that both saw the prefix each counted the ARP entries their own devices
+  // held for it, and those are mostly the same hosts counted twice. The
+  // larger of the two is as close to the union as this can get: countHosts
+  // keeps no addresses, only a total, so adding them would double-count
+  // every host both blocks saw. Understating a host count is the safe
+  // direction, and the number is reported, never written anywhere.
+  //
+  // The estate total is then the sum of what survived, not the sum of the
+  // parts, which counted a shared prefix's hosts once per block.
+  const mostHosts = new Map<string, number>();
+  for (const part of parts) {
+    for (const prefix of part.prefixes) {
+      const key = `${prefix.vrf}|${prefix.cidr}`;
+      mostHosts.set(key, Math.max(mostHosts.get(key) ?? 0, prefix.hosts));
+    }
+  }
+  for (const prefix of prefixes) prefix.hosts = mostHosts.get(`${prefix.vrf}|${prefix.cidr}`) ?? prefix.hosts;
+
+  // Summed, not taken from the first part. A second block's dropped routes
+  // used to vanish, so the report understated what it had left out, which
+  // is the one number that tells an operator whether --include-public or
+  // --static-only is hiding their address space.
+  const dropped = emptyDropCounts();
+  for (const part of parts) {
+    for (const bucket of Object.keys(dropped) as (keyof DropCounts)[]) dropped[bucket] += part.dropped[bucket];
+  }
+
+  return {
+    ...parts[0],
+    devices: parts.flatMap((part) => part.devices),
+    failures: parts.flatMap((part) => part.failures),
+    prefixes,
+    dropped,
+    hosts: prefixes.reduce((sum, prefix) => sum + prefix.hosts, 0),
+    overlappingVrfs: [...new Set(parts.flatMap((part) => part.overlappingVrfs))].sort(),
+  };
+}
+
+/**
  * ARP entries counted per subnet: each distinct address lands in the most
  * specific prefix of its VRF that contains it. A host two routers both
  * see on one VLAN is one host, so addresses are deduplicated across

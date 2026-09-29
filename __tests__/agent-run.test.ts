@@ -258,6 +258,42 @@ describe('what a run proposes', () => {
     expect(source).not.toMatch(/\bapplyManifest\b/);
   });
 
+  it('files one create_subnet for a prefix two source blocks both route', async () => {
+    // Two `sources:` blocks, two devices, one prefix routed by both. The
+    // prefixes are deduplicated inside each discoverCisco call and nothing
+    // looked again across them, so the proposal held the same CIDR twice.
+    // The API refuses colliding operations, so the run threw, filed
+    // nothing, and did the same again every night after.
+    const yaml = `
+region: hq
+pools: [10.50.0.0/16]
+sources:
+  - type: cisco
+    hosts: [lab1.example]
+    user: readonly
+    password_env: NXIP_SSH_PASSWORD
+  - type: cisco
+    hosts: [lab2.example]
+    user: readonly
+    password_env: NXIP_SSH_PASSWORD
+`;
+    const api = fakeApi({
+      openSession: async (target) =>
+        new TranscriptSession(
+          target.host === 'lab2.example'
+            ? labDevice(`${ROUTES}`.replace('lab1', 'lab2'))
+            : labDevice()
+        ),
+    });
+    const log = await runAgentOnce(config(yaml), api.deps, newAgentState());
+
+    expect(log.devices.read).toBe(2);
+    expect(log.prefixes.discovered).toBe(1);
+    expect(api.proposals).toHaveLength(1);
+    expect(api.proposals[0].operations).toHaveLength(1);
+    expect(api.proposals[0].operations[0].input).toMatchObject({ cidr: '10.50.0.0/24' });
+  });
+
   it('holds back ranges the config excludes before anything else looks at them', async () => {
     const api = fakeApi();
     const log = await runAgentOnce(config(`${CONFIG_YAML}exclude: [10.50.0.0/16]\n`), api.deps, newAgentState());

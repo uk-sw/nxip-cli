@@ -237,6 +237,41 @@ describe('pools in the manifest', () => {
   });
 });
 
+describe('two source blocks read as one estate', () => {
+  /**
+   * core1 and edge1 sit on the same transit /30, so each one routes a
+   * prefix the other also routes. Read in one source block they deduplicate;
+   * read in two they used not to, and the duplicate reached the manifest as
+   * a repeated CIDR and scheduled mode as two create_subnet operations for
+   * one block in one proposal, which the API refuses outright.
+   */
+  const split = async () => mergeDiscoveries([await discover(['core1.example']), await discover(['edge1.example'])]);
+  const together = async () => mergeDiscoveries([await discover(['core1.example', 'edge1.example'])]);
+
+  it('counts each prefix once, exactly as one source block holding both devices does', async () => {
+    const key = (discovery: Awaited<ReturnType<typeof split>>) =>
+      (discovery.cisco?.prefixes ?? []).map((p) => `${p.vrf}/${p.cidr}`).sort();
+
+    expect(key(await split())).toEqual(key(await together()));
+    // The transit link really is the shared one, so the test is guarding
+    // something rather than comparing two empty lists.
+    expect(key(await split())).toContain('default/10.0.0.0/30');
+  });
+
+  it('gives the collision analysis one network per prefix, not the estate colliding with itself', async () => {
+    const ids = (await split()).networks.map((n) => n.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('adds up what each source dropped rather than losing the second one', async () => {
+    // The drop counts are the one number that says whether --include-public
+    // or --static-only is quietly hiding somebody's address space, so a
+    // second source's drops going missing understates it.
+    expect((await split()).cisco?.dropped).toEqual((await together()).cisco?.dropped);
+    expect((await split()).cisco?.dropped.hostRoute).toBeGreaterThan(0);
+  });
+});
+
 describe('the human report', () => {
   it('describes the devices, the prefixes by kind, the hosts and what was dropped', async () => {
     const report = analyseDiscovery(mergeDiscoveries([await discover(['core1.example', 'edge1.example'])]));
