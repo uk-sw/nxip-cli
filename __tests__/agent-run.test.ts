@@ -361,6 +361,23 @@ describe('prefixes that stop being routed', () => {
     }
   });
 
+  it('never calls a prefix unrouted just because the config excludes its range', async () => {
+    // 10.50.0.0/24 is routed and was read off the device; `exclude:` only
+    // says never report it, not that it has gone. nxip holds it from an
+    // earlier run of this same agent, and reporting it as no longer routed
+    // sends the operator to hunt for a VLAN that is still up. Same class as
+    // the pool case above.
+    const api = fakeApi({ subnets: [subnet('10.50.0.0/24', { source: 'nxip-agent', network_id: 'FTX0000TEST' })] });
+    const excluded = config(`${CONFIG_YAML}exclude: [10.50.0.0/16]\n`);
+    const state = newAgentState();
+    for (let run = 0; run < 4; run++) {
+      const log = await runAgentOnce(excluded, api.deps, state);
+      expect(log.prefixes.discovered).toBe(0);
+      expect(log.no_longer_routed).toEqual([]);
+    }
+    expect(api.proposals).toEqual([]);
+  });
+
   it('never calls a prefix unrouted just because its VRF was left for another organisation', async () => {
     // Two VRFs overlap, so only the first is proposed; the rest are named
     // in skipped_vrfs. Their prefixes were still seen.

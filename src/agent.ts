@@ -311,6 +311,19 @@ export async function runAgentOnce(config: AgentConfig, deps: AgentDependencies,
 
   const merged = mergeDiscoveries(discoveries);
   const details = merged.cisco;
+
+  // Everything the devices actually said, taken before anything is held
+  // back and added to below with whatever reached the manifest. It answers
+  // one question only: is this prefix still routed? Three things keep a
+  // routed prefix out of the manifest and none of them make it unrouted:
+  // the manifest holds one VRF when two overlap, it leaves out anything
+  // outside the configured pools, and `exclude:` holds back ranges the
+  // operator never wants reported. Built from the filtered list, an
+  // excluded prefix nxip already holds from this agent came back as "no
+  // longer routed", which is the same lie the pool case was (1900f63) and
+  // the operator acts on it by hunting for a VLAN that is still up.
+  const discoveredCidrs = new Set<string>(details?.prefixes.map((prefix) => prefix.cidr) ?? []);
+
   if (details) {
     log.devices.read = details.devices.length;
     log.devices.failed = details.failures;
@@ -370,12 +383,6 @@ export async function runAgentOnce(config: AgentConfig, deps: AgentDependencies,
   const existingByCidr = new Map(existingSubnets.map((s) => [s.cidr, s]));
   const knownNames = new Map<string, NxipSubnet>();
   const newNames = new Set<string>();
-  // Everything the devices actually said, not just what reached the
-  // manifest. The manifest holds one VRF when two overlap, and leaves out
-  // anything outside the configured pools; those prefixes are still routed,
-  // and calling them "no longer routed" below would be a lie the operator
-  // acts on.
-  const discoveredCidrs = new Set<string>(details?.prefixes.map((prefix) => prefix.cidr) ?? []);
 
   for (const entry of manifest.subnets) {
     const cidr = entry.body.cidr;
