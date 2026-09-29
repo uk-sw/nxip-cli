@@ -211,6 +211,14 @@ sources:
     expect(() => loadAgentConfig(`schedule: "0 99 * * *"\n${MINIMAL}`, env)).toThrow(/Invalid schedule/);
   });
 
+  it('refuses a schedule that parses but can never fire', () => {
+    // 31 February. Every field is valid on its own, so this used to load,
+    // and the first tick of the schedule loop then threw out of the loop
+    // that was meant to run for ever.
+    expect(() => loadAgentConfig(`schedule: "0 2 31 2 *"\n${MINIMAL}`, env)).toThrow(/Invalid schedule/);
+    expect(() => loadAgentConfig(`schedule: "0 2 31 2 *"\n${MINIMAL}`, env)).toThrow(/never fires/);
+  });
+
   it('refuses an exclude range that is not a CIDR', () => {
     expect(() => loadAgentConfig(`${MINIMAL}\nexclude: [not-a-cidr]\n`, env)).toThrow(/Invalid exclude/);
   });

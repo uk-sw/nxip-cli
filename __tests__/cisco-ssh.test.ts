@@ -134,6 +134,26 @@ describe('the SSH transport against an ssh2 server', () => {
     expect(device.commands).toContain('show ip arp');
   });
 
+  it('records a device that refused terminal length 0 rather than assuming it took', async () => {
+    // Without the check, a device still paging looks like a device with a
+    // short routing table: the --More-- markers are stripped from whatever
+    // does arrive and nothing anywhere says the read was cut off.
+    const outputs = iosOutputs({ 'terminal length 0': '% Permission denied for the role' });
+    device = await startFakeDevice({ outputs });
+    const session = await connect(device);
+    let tables;
+    try {
+      tables = await readDevice(session, '127.0.0.1');
+    } finally {
+      await session.close();
+    }
+
+    expect(tables.refused.map((r) => r.command)).toContain('terminal length 0');
+    // And the device is still read with whatever it will give, as the spec
+    // says a refused command must be.
+    expect(tables.routes).toHaveLength(2);
+  });
+
   it('strips the echoed command and the trailing prompt from every answer', async () => {
     device = await startFakeDevice({ outputs: iosOutputs() });
     const session = await connect(device);

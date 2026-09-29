@@ -56,6 +56,13 @@ export function parseIosVrfs(text: string): VrfInfo[] {
     const match = /^\s{0,3}(\S+)\s+(<not set>|\S+)\s+(\S+)/.exec(line);
     if (!match) continue;
     const [, name, , protocols] = match;
+    // The third column is Protocols, so it names address families and
+    // nothing else. Without that check any three-token line was a VRF:
+    // "% IPv4 unicast VRFs not configured", which is what a device with no
+    // VRFs says and which refusalOf does not catch, produced a VRF called
+    // "%", and the run then asked the device for `show ip route vrf %` and
+    // `show ip arp vrf %` and recorded two more refusals for it.
+    if (!/^(ipv4|ipv6)(,(ipv4|ipv6))*$/i.test(protocols)) continue;
     const families: VrfInfo['families'] = [];
     if (/ipv4/i.test(protocols)) families.push('IPV4');
     if (/ipv6/i.test(protocols)) families.push('IPV6');

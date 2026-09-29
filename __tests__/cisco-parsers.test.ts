@@ -67,6 +67,15 @@ describe('IOS 15 (edge1)', () => {
     expect(parseIosVrfs(ios15.get('show vrf')!)).toEqual([{ name: 'CUST-A', families: ['IPV4'] }]);
   });
 
+  it('reads no VRFs from a device that says it has none', () => {
+    // What a device with no VRFs configured answers. It is three tokens
+    // like any VRF row, and it does not begin with one of the words
+    // refusalOf knows, so it used to become a VRF named "%": the run then
+    // asked that device for `show ip route vrf %` and `show ip arp vrf %`.
+    expect(parseIosVrfs('% IPv4 unicast VRFs not configured')).toEqual([]);
+    expect(parseIosVrfs('  Name                             Default RD            Protocols   Interfaces')).toEqual([]);
+  });
+
   it('reads every addressed interface, with the VRF the address sits in', () => {
     // Gi0/1 has "Internet protocol processing disabled" and no address, so
     // it must not appear at all.

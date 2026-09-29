@@ -147,6 +147,12 @@ export function loadAgentConfig(rawYaml: string, environment: ConfigEnvironment 
   if (file.schedule) {
     try {
       schedule = parseCron(file.schedule);
+      // A schedule that can never fire is a config error, not a surprise at
+      // the first tick. "0 2 31 2 *" parses cleanly field by field, and
+      // nextRun then runs out of its five-year bound and throws out of the
+      // loop that was meant to run for ever, so the container exits with an
+      // unexplained error instead of refusing the file it was given.
+      nextRun(schedule, new Date());
     } catch (error) {
       throw new AgentConfigError(`Invalid schedule: ${error instanceof Error ? error.message : String(error)}`);
     }

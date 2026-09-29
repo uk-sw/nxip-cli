@@ -152,7 +152,13 @@ export async function readDevice(session: DeviceSession, host: string): Promise<
   const refused: DeviceTables['refused'] = [];
   const scratch = { refused };
 
-  await session.run('terminal length 0');
+  // Checked like any other command. A device that refuses it pages
+  // everything below: stripEchoAndPrompt removes the --More-- markers that
+  // do arrive, but the device also stops sending until a key is pressed, so
+  // the read comes back short or times out. Recorded, so the report and the
+  // manifest header name it instead of leaving a truncated routing table
+  // looking like a small one.
+  await ask(session, 'terminal length 0', scratch);
 
   const versionText = await session.run('show version');
   const platform = detectPlatform(versionText);
