@@ -11,6 +11,13 @@
 # skipped without a compiler and changes nothing but a cipher benchmark.
 FROM node:24-slim
 
+# GHCR links a package to its repository through this label and nothing
+# else. Without it the package is its own unlinked, private thing: the
+# README's `docker run ghcr.io/uk-sw/nxip-agent` fails for everybody but the
+# account that pushed it, with an error about authentication rather than
+# about visibility.
+LABEL org.opencontainers.image.source=https://github.com/uk-sw/nxip-cli
+
 ARG NXIP_VERSION=latest
 
 # --ignore-scripts refuses every install script, including the optional

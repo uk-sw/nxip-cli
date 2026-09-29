@@ -361,6 +361,15 @@ describe('what a run proposes', () => {
     expect(peak).toBeLessThanOrEqual(4);
   });
 
+  it('labels the image with its repository, without which the package is private', () => {
+    // GHCR links a package to its repository through this label and nothing
+    // else. Without it the README's `docker run ghcr.io/uk-sw/nxip-agent`
+    // fails for everybody but the account that pushed it, and the error
+    // talks about authentication rather than about visibility.
+    const dockerfile = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'Dockerfile'), 'utf-8');
+    expect(dockerfile).toContain('LABEL org.opencontainers.image.source=https://github.com/uk-sw/nxip-cli');
+  });
+
   it('never applies: every operation it files is a proposal, and it imports nothing that creates', () => {
     // The dependency surface is the whole of what a run can reach, and it
     // holds no create call. This guards the import list too, so a future
