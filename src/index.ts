@@ -9,7 +9,7 @@ import { expandSiteSpec, renderManifest, SiteSpecError } from './site.js';
 import { readVersion } from './version.js';
 import { discoverAws, AwsScanError } from './aws.js';
 import { discoverAzure, AzureScanError } from './azure.js';
-import { analyseDiscovery, formatScanReport, renderDiscoveryManifests, mergeDiscoveries, redactDiscovery, type Discovery } from './scan.js';
+import { analyseDiscovery, everyCiscoDeviceFailed, formatScanReport, renderDiscoveryManifests, mergeDiscoveries, redactDiscovery, type Discovery } from './scan.js';
 import { DEFAULT_SHARED_RANGES, parseSharedRanges, SharedRangeError } from './shared-ranges.js';
 import { findUnknownMcpArgument } from './mcp-args.js';
 import { buildTree, formatTree, PoolSelectionError, selectPool, shouldUseColor } from './tree.js';
@@ -437,6 +437,15 @@ async function main() {
     }
 
     const report = analyseDiscovery(discovery, { sharedRanges, includeDefaultNetworks: args.includeDefaultNetworks });
+
+    // Set here rather than at the end, because every branch below returns
+    // its own way and one of them would otherwise skip it. Nothing was
+    // read from any device the run named, so the run failed even though
+    // the report prints happily: the section above says which host and
+    // what it said.
+    if (everyCiscoDeviceFailed(discovery)) {
+      process.exitCode = 1;
+    }
 
     // Usually one manifest. The Cisco source produces one per VRF when two
     // VRFs overlap, since nxip refuses overlap inside one organisation.

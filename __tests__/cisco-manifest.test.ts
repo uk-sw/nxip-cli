@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { discoverCisco, BET_33_NOTE, WHAT_NXIP_NEVER_DOES, type CiscoDiscovery } from '../src/cisco.js';
-import { analyseDiscovery, formatScanReport, mergeDiscoveries, renderDiscoveryManifests, type Discovery } from '../src/scan.js';
+import { analyseDiscovery, everyCiscoDeviceFailed, formatScanReport, mergeDiscoveries, renderDiscoveryManifests, type Discovery } from '../src/scan.js';
 import { parseFullManifest } from '../src/manifest.js';
 import { planManifest, planPools } from '../src/plan.js';
 import { transcriptSession } from './cisco-fixtures.js';
@@ -267,6 +267,38 @@ describe('the human report', () => {
     expect(discovery.cisco.prefixes.length).toBeGreaterThan(0);
     // And the manifest says so where somebody reviewing it will see it.
     expect(manifestsFor(discovery)[0].text).toContain('#   gone.example: NOT READ, connect ETIMEDOUT');
+  });
+
+  it('names every device and why it failed when none of them could be read', async () => {
+    // The first five minutes: a wrong password, or a device that refuses
+    // the key exchange. There is nothing to analyse, and the report used to
+    // return at that point without printing the Cisco section, so it said
+    // "No prefixes found" and never named a host or repeated what it said.
+    const discovery = await discover(['core1.example', 'edge1.example'], {
+      openSession: async (target) => {
+        throw new Error(`${target.host}: All configured authentication methods failed`);
+      },
+    });
+    const merged = mergeDiscoveries([discovery]);
+    const text = formatScanReport(analyseDiscovery(merged));
+
+    expect(text).toContain('Cisco: 0 devices read at site hq, 2 not read.');
+    expect(text).toContain('core1.example  NOT READ');
+    expect(text).toContain('All configured authentication methods failed');
+    expect(text).toContain('edge1.example  NOT READ');
+    expect(text).toContain('No prefixes found. Nothing to analyse.');
+    // And the run is a failure, not a network that happens to be empty.
+    expect(everyCiscoDeviceFailed(merged)).toBe(true);
+  });
+
+  it('is still a successful run when one device of two was read', async () => {
+    const discovery = await discover(['core1.example', 'gone.example'], {
+      openSession: async (target) => {
+        if (target.host === 'gone.example') throw new Error('connect ETIMEDOUT');
+        return transcriptSession(FIXTURES[target.host]);
+      },
+    });
+    expect(everyCiscoDeviceFailed(mergeDiscoveries([discovery]))).toBe(false);
   });
 });
 

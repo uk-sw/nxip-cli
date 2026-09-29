@@ -470,6 +470,19 @@ export function formatOverlapClusters(report: ScanReport, prefix = '', only?: Ov
   return lines;
 }
 
+/**
+ * Every host the run named failed to be read. `scan cisco` exits non-zero
+ * on it: a container run or a CI step that reached no device at all is not
+ * a success, and exit 0 there reads as "your network holds nothing" rather
+ * than as "nothing answered". A run where one device of ten failed still
+ * exits 0, because nine devices' worth of address plan is worth having and
+ * the report names the tenth.
+ */
+export function everyCiscoDeviceFailed(discovery: MergedDiscovery): boolean {
+  const cisco = discovery.cisco;
+  return cisco !== undefined && cisco.devices.length === 0 && cisco.failures.length > 0;
+}
+
 export function formatScanReport(report: ScanReport): string {
   const lines: string[] = [];
   const { totals, discovery } = report;
@@ -499,23 +512,29 @@ export function formatScanReport(report: ScanReport): string {
   }
   lines.push('');
 
-  if (totals.networks === 0) {
-    lines.push(`No ${networkNoun(report, true)} found. Nothing to analyse.`);
-    lines.push('');
-    return lines.join('\n');
-  }
-
   // The Cisco source describes itself: devices, prefixes by kind, hosts in
   // ARP, what was dropped. Its per-prefix "networks" are skipped in the
   // cloud loop below, where "0 subnets, 0% carved" would say nothing true.
   const ciscoOnly = discovery.sources.length > 0 && discovery.sources.every((s) => s.provider === 'cisco');
-  if (!ciscoOnly) {
+  if (!ciscoOnly && totals.networks > 0) {
     const cloudNetworks = discovery.networks.filter((n) => n.provider !== 'cisco').length;
     lines.push(`Found ${cloudNetworks} ${networkNoun(report, cloudNetworks !== 1)} and ${totals.subnets} subnet${totals.subnets === 1 ? '' : 's'}.`);
     lines.push('');
   }
+  // Before the empty-report return below, not after it. When every device
+  // refused the credential there are no networks at all, and the old order
+  // printed "No prefixes found. Nothing to analyse." without ever naming
+  // the device that failed or what it said. That is the first five minutes
+  // of somebody's first run, and it was the one moment the report had
+  // nothing useful to say.
   if (discovery.cisco) {
     lines.push(...formatCiscoSection(discovery.cisco));
+  }
+
+  if (totals.networks === 0) {
+    lines.push(`No ${networkNoun(report, true)} found. Nothing to analyse.`);
+    lines.push('');
+    return lines.join('\n');
   }
 
   for (const summary of report.summaries) {
