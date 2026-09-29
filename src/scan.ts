@@ -421,10 +421,12 @@ function networkNoun(report: ScanReport, plural = false): string {
  * qualifier the report carries. Two renderers for one fact is two things to
  * keep in step, and no way to notice when they stop agreeing.
  */
-export function formatOverlapClusters(report: ScanReport, prefix = ''): string[] {
+export function formatOverlapClusters(report: ScanReport, prefix = '', only?: OverlapCluster[]): string[] {
   const lines: string[] = [];
 
-  for (const cluster of report.clusters) {
+  // `only` lets the manifest render the subset it has actually acted on,
+  // rather than describing a collision it has left alone.
+  for (const cluster of only ?? report.clusters) {
     // Two networks is the common case and reads better on one line: "A vs B"
     // is legible at a glance, where a header plus two rows spends four lines
     // restating what the rows already show. Past two it stops working, since
@@ -843,6 +845,21 @@ export function renderDiscoveryManifest(report: ScanReport, options: ManifestOpt
     );
   }
 
+  // A collision between two Cisco prefixes in different VRFs is exactly
+  // what the per-VRF split exists for: the two sides go in different files,
+  // so neither can be "commented out in favour of the other side" here, and
+  // nothing in this file collides with anything else in it. Commenting one
+  // out anyway silently dropped a VLAN from its own VRF's manifest. The
+  // overlap is still reported: the scan report lists it, and every per-VRF
+  // file carries the bet #33 note in its header. Same-VRF collisions and
+  // Cisco-versus-cloud ones are real in one file and stay.
+  const clusters = report.clusters.filter((cluster) => {
+    if (!cluster.members.every((member) => member.provider === 'cisco')) return true;
+    // The Cisco source's network id is `vrf/cidr`, the same key commentOut
+    // uses below.
+    return new Set(cluster.members.map((member) => member.networkId.split('/')[0])).size === 1;
+  });
+
   // Collisions were the one finding with no comment block, while default
   // networks and shared ranges both had one. That gap mattered most to the
   // person least likely to notice it: someone running scan --emit-manifest
@@ -852,8 +869,8 @@ export function renderDiscoveryManifest(report: ScanReport, options: ManifestOpt
   // told existed.
   // Only in the primary file: a per-VRF manifest after the first holds one
   // VRF's prefixes and nothing it could collide with is in it.
-  if (report.clusters.length > 0 && includeCloud) {
-    const count = report.clusters.length;
+  if (clusters.length > 0 && includeCloud) {
+    const count = clusters.length;
     lines.push(`# WARNING: ${count} address collision${count === 1 ? '' : 's'} between the networks below.`);
     lines.push('#');
     lines.push('# These are conflicts within this scan. It has not been compared against');
@@ -874,7 +891,7 @@ export function renderDiscoveryManifest(report: ScanReport, options: ManifestOpt
     lines.push('# The networks in each collision below cannot be peered or routed to each');
     lines.push('# other without renumbering one side:');
     lines.push('#');
-    lines.push(...formatOverlapClusters(report, '#'));
+    lines.push(...formatOverlapClusters(report, '#', clusters));
     lines.push('');
   }
 
@@ -893,7 +910,7 @@ export function renderDiscoveryManifest(report: ScanReport, options: ManifestOpt
   // it, which is not true the other way round. It is still a guess about
   // somebody else's network, so the comment block says so.
   const collisionLosers = new Set<string>();
-  for (const cluster of report.clusters) {
+  for (const cluster of clusters) {
     const ranked = [...cluster.members].sort((a, b) => {
       const pa = parseIpv4Cidr(a.cidr)?.prefixLength ?? 32;
       const pb = parseIpv4Cidr(b.cidr)?.prefixLength ?? 32;
