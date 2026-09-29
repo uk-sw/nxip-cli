@@ -1,0 +1,274 @@
+!! SYNTHETIC CAPTURE. Written by hand from the documented IOS-XE 17 output
+!! formats, not taken from a device. Replace with a real capture from the
+!! DevNet always-on IOS-XE sandbox or a CML-Free node before trusting the
+!! parsers on real gear.
+!! Every "### <command>" line starts that command's output, as the agent
+!! would receive it after `terminal length 0`. Lines starting "!!" are
+!! this header only and appear in no command's output.
+!!
+!! Device: core1, IOS-XE 17.9.3a, CSR1000V. Three VLANs (Vlan10 with a
+!! secondary address, Vlan20, Vlan30), a /30 transit to edge1 on Gi1, a
+!! /31 transit on Gi2, VRF MGMT on Gi3, a static route to edge1's
+!! 10.1.100.0/24, BGP and EIGRP learned routes, one of them ECMP.
+### show version
+Cisco IOS XE Software, Version 17.09.03a
+Cisco IOS Software [Cupertino], Virtual XE Software (X86_64_LINUX_IOSD-UNIVERSALK9-M), Version 17.9.3a, RELEASE SOFTWARE (fc6)
+Technical Support: http://www.cisco.com/techsupport
+Copyright (c) 1986-2023 by Cisco Systems, Inc.
+Compiled Thu 20-Apr-23 21:22 by mcpre
+
+
+Cisco IOS-XE software, Copyright (c) 2005-2023 by cisco Systems, Inc.
+All rights reserved.  Certain components of Cisco IOS-XE software are
+licensed under the GNU General Public License ("GPL") Version 2.0.  The
+software code licensed under GPL Version 2.0 is free software that comes
+with ABSOLUTELY NO WARRANTY.  You can redistribute and/or modify such
+GPL code under the terms of GPL Version 2.0.  For more details, see the
+documentation or "License Notice" file accompanying the IOS-XE software,
+or the applicable URL provided on the flyer accompanying the IOS-XE
+software.
+
+
+ROM: IOS-XE ROMMON
+
+core1 uptime is 2 days, 3 hours, 40 minutes
+Uptime for this control processor is 2 days, 3 hours, 42 minutes
+System returned to ROM by reload
+System image file is "bootflash:packages.conf"
+Last reload reason: reload
+
+
+
+This product contains cryptographic features and is subject to United
+States and local country laws governing import, export, transfer and
+use. Delivery of Cisco cryptographic products does not imply
+third-party authority to import, export, distribute or use encryption.
+Importers, exporters, distributors and users are responsible for
+compliance with U.S. and local country laws. By using this product you
+agree to comply with applicable laws and regulations. If you are unable
+to comply with U.S. and local laws, return this product immediately.
+
+A summary of U.S. laws governing Cisco cryptographic products may be found at:
+http://www.cisco.com/wwl/export/crypto/tool/stqrg.html
+
+If you require further assistance please contact us by sending email to
+export@cisco.com.
+
+License Level: ax
+License Type: N/A(Smart License Enabled)
+Next reload license Level: ax
+
+The current throughput level is 1000 kbps
+
+
+Smart Licensing Status: Smart Licensing Using Policy
+
+cisco CSR1000V (VXE) processor (revision VXE) with 2071961K/3075K bytes of memory.
+Processor board ID 9KXYZABCDEF
+Router operating mode: Autonomous
+4 Gigabit Ethernet interfaces
+32768K bytes of non-volatile configuration memory.
+3978420K bytes of physical memory.
+6188032K bytes of virtual hard disk at bootflash:.
+
+Configuration register is 0x2102
+### show vrf
+  Name                             Default RD            Protocols   Interfaces
+  MGMT                             <not set>             ipv4        Gi3
+### show ip interface
+GigabitEthernet1 is up, line protocol is up
+  Internet address is 10.0.0.1/30
+  Broadcast address is 255.255.255.255
+  Address determined by non-volatile memory
+  MTU is 1500 bytes
+  Helper address is not set
+  Directed broadcast forwarding is disabled
+  Outgoing Common access list is not set
+  Outgoing access list is not set
+  Inbound Common access list is not set
+  Inbound  access list is not set
+  Proxy ARP is enabled
+  Local Proxy ARP is disabled
+  Security level is default
+  Split horizon is enabled
+  ICMP redirects are always sent
+  ICMP unreachables are always sent
+  ICMP mask replies are never sent
+  IP fast switching is enabled
+  IP Flow switching is disabled
+  IP CEF switching is enabled
+  IP CEF switching turbo vector
+  IP Null turbo vector
+  Associated unicast routing topologies:
+        Topology "base", operation state is UP
+  IP multicast fast switching is enabled
+  IP multicast distributed fast switching is disabled
+  IP route-cache flags are Fast, CEF
+  Router Discovery is disabled
+  IP output packet accounting is disabled
+  IP access violation accounting is disabled
+  TCP/IP header compression is disabled
+  RTP/IP header compression is disabled
+  Probe proxy name replies are disabled
+  Policy routing is disabled
+  Network address translation is disabled
+  BGP Policy Mapping is disabled
+  Input features: MCI Check
+  IPv4 WCCP Redirect outbound is disabled
+  IPv4 WCCP Redirect inbound is disabled
+  IPv4 WCCP Redirect exclude is disabled
+GigabitEthernet2 is up, line protocol is up
+  Internet address is 10.0.1.0/31
+  Broadcast address is 255.255.255.255
+  Address determined by non-volatile memory
+  MTU is 1500 bytes
+  Helper address is not set
+GigabitEthernet3 is up, line protocol is up
+  Internet address is 192.168.0.1/24
+  Broadcast address is 255.255.255.255
+  Address determined by non-volatile memory
+  MTU is 1500 bytes
+  Helper address is not set
+  VPN Routing/Forwarding "MGMT"
+GigabitEthernet4 is administratively down, line protocol is down
+  Internet protocol processing disabled
+Loopback0 is up, line protocol is up
+  Internet address is 10.255.0.2/32
+  Broadcast address is 255.255.255.255
+  Address determined by non-volatile memory
+  MTU is 1514 bytes
+Vlan10 is up, line protocol is up
+  Internet address is 10.1.10.1/24
+  Broadcast address is 255.255.255.255
+  Address determined by non-volatile memory
+  MTU is 1500 bytes
+  Helper address is not set
+  Directed broadcast forwarding is disabled
+  Secondary address 10.1.11.1/24
+  Outgoing access list is not set
+  Inbound  access list is not set
+Vlan20 is up, line protocol is up
+  Internet address is 10.1.20.1/24
+  Broadcast address is 255.255.255.255
+  Address determined by non-volatile memory
+  MTU is 1500 bytes
+Vlan30 is up, line protocol is up
+  Internet address is 10.1.30.1/24
+  Broadcast address is 255.255.255.255
+  Address determined by non-volatile memory
+  MTU is 1500 bytes
+### show ipv6 interface
+GigabitEthernet1 is up, line protocol is up
+  IPv6 is enabled, link-local address is FE80::2
+  No Virtual link-local address(es):
+  Global unicast address(es):
+    2001:DB8:0:1::1, subnet is 2001:DB8:0:1::/64
+  Joined group address(es):
+    FF02::1
+    FF02::2
+  MTU is 1500 bytes
+Vlan10 is up, line protocol is up
+  IPv6 is enabled, link-local address is FE80::2
+  No Virtual link-local address(es):
+  Global unicast address(es):
+    FD00:1:10::1, subnet is FD00:1:10::/64
+  Joined group address(es):
+    FF02::1
+    FF02::2
+  MTU is 1500 bytes
+### show ip route vrf *
+Codes: L - local, C - connected, S - static, R - RIP, M - mobile, B - BGP
+       D - EIGRP, EX - EIGRP external, O - OSPF, IA - OSPF inter area
+       N1 - OSPF NSSA external type 1, N2 - OSPF NSSA external type 2
+       E1 - OSPF external type 1, E2 - OSPF external type 2
+       i - IS-IS, su - IS-IS summary, L1 - IS-IS level-1, L2 - IS-IS level-2
+       ia - IS-IS inter area, * - candidate default, U - per-user static route
+       H - NHRP, G - NHRP registered, g - NHRP registration summary
+       o - ODR, P - periodic downloaded static route, l - LISP
+       a - application route
+       + - replicated route, % - next hop override, p - overrides from PfR
+       & - replicated local route overrides by connected
+
+Gateway of last resort is 10.0.0.2 to network 0.0.0.0
+
+S*    0.0.0.0/0 [1/0] via 10.0.0.2
+      10.0.0.0/8 is variably subnetted, 16 subnets, 5 masks
+C        10.0.0.0/30 is directly connected, GigabitEthernet1
+L        10.0.0.1/32 is directly connected, GigabitEthernet1
+C        10.0.1.0/31 is directly connected, GigabitEthernet2
+L        10.0.1.0/32 is directly connected, GigabitEthernet2
+C        10.1.10.0/24 is directly connected, Vlan10
+L        10.1.10.1/32 is directly connected, Vlan10
+C        10.1.11.0/24 is directly connected, Vlan10
+L        10.1.11.1/32 is directly connected, Vlan10
+C        10.1.20.0/24 is directly connected, Vlan20
+L        10.1.20.1/32 is directly connected, Vlan20
+C        10.1.30.0/24 is directly connected, Vlan30
+L        10.1.30.1/32 is directly connected, Vlan30
+S        10.1.100.0/24 [1/0] via 10.0.0.2
+B        10.200.0.0/16 [20/0] via 10.0.1.1, 2d03h
+D EX     10.201.0.0/24 [170/3072] via 10.0.1.1, 2d03h, GigabitEthernet2
+                       [170/3072] via 10.0.0.2, 2d03h, GigabitEthernet1
+C        10.255.0.2/32 is directly connected, Loopback0
+
+Routing Table: MGMT
+Codes: L - local, C - connected, S - static, R - RIP, M - mobile, B - BGP
+       D - EIGRP, EX - EIGRP external, O - OSPF, IA - OSPF inter area
+       N1 - OSPF NSSA external type 1, N2 - OSPF NSSA external type 2
+       E1 - OSPF external type 1, E2 - OSPF external type 2
+       i - IS-IS, su - IS-IS summary, L1 - IS-IS level-1, L2 - IS-IS level-2
+       ia - IS-IS inter area, * - candidate default, U - per-user static route
+       H - NHRP, G - NHRP registered, g - NHRP registration summary
+       o - ODR, P - periodic downloaded static route, l - LISP
+       a - application route
+       + - replicated route, % - next hop override, p - overrides from PfR
+       & - replicated local route overrides by connected
+
+Gateway of last resort is not set
+
+      192.168.0.0/24 is variably subnetted, 2 subnets, 2 masks
+C        192.168.0.0/24 is directly connected, GigabitEthernet3
+L        192.168.0.1/32 is directly connected, GigabitEthernet3
+### show ipv6 route
+IPv6 Routing Table - default - 6 entries
+Codes: C - Connected, L - Local, S - Static, U - Per-user Static route
+       B - BGP, R - RIP, H - NHRP, I1 - ISIS L1
+       I2 - ISIS L2, IA - ISIS interarea, IS - ISIS summary, D - EIGRP
+       EX - EIGRP external, ND - ND Default, NDp - ND Prefix, DCE - Destination
+       NDr - Redirect, RL - RPL, O - OSPF Intra, OI - OSPF Inter
+       OE1 - OSPF ext 1, OE2 - OSPF ext 2, ON1 - OSPF NSSA ext 1
+       ON2 - OSPF NSSA ext 2, la - LISP alt, lr - LISP site-registrations
+       ld - LISP dyn-eid, lA - LISP away, le - LISP extranet-policy
+       lp - LISP publications, ls - LISP destinations-summary
+       a - Application, m - OMP
+C   2001:DB8:0:1::/64 [0/0]
+     via GigabitEthernet1, directly connected
+L   2001:DB8:0:1::1/128 [0/0]
+     via GigabitEthernet1, receive
+C   FD00:1:10::/64 [0/0]
+     via Vlan10, directly connected
+L   FD00:1:10::1/128 [0/0]
+     via Vlan10, receive
+OE2 FD00:1:100::/64 [110/20]
+     via FE80::1, GigabitEthernet1
+L   FF00::/8 [0/0]
+     via Null0, receive
+### show ip arp
+Protocol  Address          Age (min)  Hardware Addr   Type   Interface
+Internet  10.0.0.1                -   0c22.3344.0001  ARPA   GigabitEthernet1
+Internet  10.0.0.2                5   0c11.2233.0002  ARPA   GigabitEthernet1
+Internet  10.0.1.0                -   0c22.3344.0002  ARPA   GigabitEthernet2
+Internet  10.0.1.1               12   0c33.4455.0001  ARPA   GigabitEthernet2
+Internet  10.1.10.1               -   0c22.3344.0010  ARPA   Vlan10
+Internet  10.1.10.11              3   0050.56aa.1011  ARPA   Vlan10
+Internet  10.1.10.12              8   0050.56aa.1012  ARPA   Vlan10
+Internet  10.1.10.13            120   0050.56aa.1013  ARPA   Vlan10
+Internet  10.1.11.1               -   0c22.3344.0010  ARPA   Vlan10
+Internet  10.1.20.1               -   0c22.3344.0020  ARPA   Vlan20
+Internet  10.1.20.50              2   0050.56aa.2050  ARPA   Vlan20
+Internet  10.1.20.51             19   0050.56aa.2051  ARPA   Vlan20
+Internet  10.1.30.1               -   0c22.3344.0030  ARPA   Vlan30
+### show ip arp vrf MGMT
+Protocol  Address          Age (min)  Hardware Addr   Type   Interface
+Internet  192.168.0.1             -   0c22.3344.0003  ARPA   GigabitEthernet3
+Internet  192.168.0.9            33   0050.56aa.0009  ARPA   GigabitEthernet3

@@ -1,0 +1,257 @@
+!! SYNTHETIC CAPTURE. Written by hand from the documented IOS 15 output
+!! formats, not taken from a device. Replace with a real capture from the
+!! CML-Free lab (an IOL node) before trusting the parsers on real gear.
+!! Every "### <command>" line starts that command's output, as the agent
+!! would receive it after `terminal length 0`. Lines starting "!!" are
+!! this header only and appear in no command's output.
+!!
+!! Device: edge1, IOS 15.4(3)M2, CISCO2911. Transit /30 to core1 on Gi0/0,
+!! a dot1q sub-interface, a public /29 on Gi0/3, and VRF CUST-A on Gi0/2
+!! carrying 10.1.20.0/24, which overlaps core1's Vlan20 in the default VRF.
+### show version
+Cisco IOS Software, C2900 Software (C2900-UNIVERSALK9-M), Version 15.4(3)M2, RELEASE SOFTWARE (fc2)
+Technical Support: http://www.cisco.com/techsupport
+Copyright (c) 1986-2014 by Cisco Systems, Inc.
+Compiled Fri 31-Oct-14 15:22 by prod_rel_team
+
+ROM: System Bootstrap, Version 15.0(1r)M15, RELEASE SOFTWARE (fc1)
+
+edge1 uptime is 3 weeks, 2 days, 4 hours, 11 minutes
+System returned to ROM by reload at 09:12:40 UTC Mon Sep 7 2026
+System image file is "flash0:c2900-universalk9-mz.SPA.154-3.M2.bin"
+Last reload type: Normal Reload
+Last reload reason: Reload Command
+
+Cisco CISCO2911/K9 (revision 1.0) with 483328K/40960K bytes of memory.
+Processor board ID FTX1840A1B2
+3 Gigabit Ethernet interfaces
+1 terminal line
+DRAM configuration is 64 bits wide with parity enabled.
+255K bytes of non-volatile configuration memory.
+250880K bytes of ATA System CompactFlash 0 (Read/Write)
+
+License Info:
+License UDI:
+Device#   PID                   SN
+*1        CISCO2911/K9          FTX1840A1B2
+
+Configuration register is 0x2102
+### show vrf
+  Name                             Default RD            Protocols   Interfaces
+  CUST-A                           65000:20              ipv4        Gi0/2
+### show ip interface
+GigabitEthernet0/0 is up, line protocol is up
+  Internet address is 10.0.0.2/30
+  Broadcast address is 255.255.255.255
+  Address determined by setup command
+  MTU is 1500 bytes
+  Helper address is not set
+  Directed broadcast forwarding is disabled
+  Outgoing access list is not set
+  Inbound  access list is not set
+  Proxy ARP is enabled
+  Local Proxy ARP is disabled
+  Security level is default
+  Split horizon is enabled
+  ICMP redirects are always sent
+  ICMP unreachables are always sent
+  ICMP mask replies are never sent
+  IP fast switching is enabled
+  IP Flow switching is disabled
+  IP CEF switching is enabled
+  IP CEF switching turbo vector
+  IP Null turbo vector
+  Associated unicast routing topologies:
+        Topology "base", operation state is UP
+  IP multicast fast switching is enabled
+  IP multicast distributed fast switching is disabled
+  IP route-cache flags are Fast, CEF
+  Router Discovery is disabled
+  IP output packet accounting is disabled
+  IP access violation accounting is disabled
+  TCP/IP header compression is disabled
+  RTP/IP header compression is disabled
+  Probe proxy name replies are disabled
+  Policy routing is disabled
+  Network address translation is disabled
+  BGP Policy Mapping is disabled
+  Input features: MCI Check
+  IPv4 WCCP Redirect outbound is disabled
+  IPv4 WCCP Redirect inbound is disabled
+  IPv4 WCCP Redirect exclude is disabled
+GigabitEthernet0/1 is up, line protocol is up
+  Internet protocol processing disabled
+GigabitEthernet0/1.100 is up, line protocol is up
+  Internet address is 10.1.100.1/24
+  Broadcast address is 255.255.255.255
+  Address determined by non-volatile memory
+  MTU is 1500 bytes
+  Helper address is not set
+  Directed broadcast forwarding is disabled
+  Outgoing access list is not set
+  Inbound  access list is not set
+  Proxy ARP is enabled
+  Local Proxy ARP is disabled
+  Security level is default
+  Split horizon is enabled
+  ICMP redirects are always sent
+  ICMP unreachables are always sent
+  ICMP mask replies are never sent
+  IP fast switching is enabled
+  IP CEF switching is enabled
+GigabitEthernet0/2 is up, line protocol is up
+  Internet address is 10.1.20.1/24
+  Broadcast address is 255.255.255.255
+  Address determined by non-volatile memory
+  MTU is 1500 bytes
+  Helper address is not set
+  Directed broadcast forwarding is disabled
+  Outgoing access list is not set
+  Inbound  access list is not set
+  Proxy ARP is enabled
+  Local Proxy ARP is disabled
+  Security level is default
+  Split horizon is enabled
+  ICMP redirects are always sent
+  ICMP unreachables are always sent
+  ICMP mask replies are never sent
+  IP fast switching is enabled
+  IP CEF switching is enabled
+  VPN Routing/Forwarding "CUST-A"
+GigabitEthernet0/3 is up, line protocol is up
+  Internet address is 203.0.113.1/29
+  Broadcast address is 255.255.255.255
+  Address determined by non-volatile memory
+  MTU is 1500 bytes
+  Helper address is not set
+  Directed broadcast forwarding is disabled
+  Network address translation is enabled, interface in domain outside
+Loopback0 is up, line protocol is up
+  Internet address is 10.255.0.1/32
+  Broadcast address is 255.255.255.255
+  Address determined by non-volatile memory
+  MTU is 1514 bytes
+  Helper address is not set
+### show ipv6 interface
+GigabitEthernet0/0 is up, line protocol is up
+  IPv6 is enabled, link-local address is FE80::1
+  No Virtual link-local address(es):
+  Global unicast address(es):
+    2001:DB8:0:1::2, subnet is 2001:DB8:0:1::/64
+  Joined group address(es):
+    FF02::1
+    FF02::2
+    FF02::1:FF00:2
+  MTU is 1500 bytes
+  ICMP error messages limited to one every 100 milliseconds
+  ICMP redirects are enabled
+  ICMP unreachables are sent
+  ND DAD is enabled, number of DAD attempts: 1
+  ND reachable time is 30000 milliseconds (using 30000)
+  ND advertised reachable time is 0 (unspecified)
+  ND advertised retransmit interval is 0 (unspecified)
+  ND router advertisements are sent every 200 seconds
+  ND router advertisements live for 1800 seconds
+  ND advertised default router preference is Medium
+  Hosts use stateless autoconfig for addresses.
+GigabitEthernet0/1.100 is up, line protocol is up
+  IPv6 is enabled, link-local address is FE80::1
+  No Virtual link-local address(es):
+  Global unicast address(es):
+    FD00:1:100::1, subnet is FD00:1:100::/64
+  Joined group address(es):
+    FF02::1
+    FF02::2
+  MTU is 1500 bytes
+### show ip route vrf *
+                      ^
+% Invalid input detected at '^' marker.
+
+### show ip route
+Codes: L - local, C - connected, S - static, R - RIP, M - mobile, B - BGP
+       D - EIGRP, EX - EIGRP external, O - OSPF, IA - OSPF inter area
+       N1 - OSPF NSSA external type 1, N2 - OSPF NSSA external type 2
+       E1 - OSPF external type 1, E2 - OSPF external type 2
+       i - IS-IS, su - IS-IS summary, L1 - IS-IS level-1, L2 - IS-IS level-2
+       ia - IS-IS inter area, * - candidate default, U - per-user static route
+       o - ODR, P - periodic downloaded static route, H - NHRP, l - LISP
+       a - application route
+       + - replicated route, % - next hop override
+
+Gateway of last resort is 203.0.113.6 to network 0.0.0.0
+
+S*    0.0.0.0/0 [1/0] via 203.0.113.6
+      10.0.0.0/8 is variably subnetted, 9 subnets, 4 masks
+C        10.0.0.0/30 is directly connected, GigabitEthernet0/0
+L        10.0.0.2/32 is directly connected, GigabitEthernet0/0
+S        10.1.0.0/16 [1/0] via 10.0.0.1
+O        10.1.10.0/24 [110/2] via 10.0.0.1, 01:12:33, GigabitEthernet0/0
+O        10.1.11.0/24 [110/2] via 10.0.0.1, 01:12:33, GigabitEthernet0/0
+C        10.1.100.0/24 is directly connected, GigabitEthernet0/1.100
+L        10.1.100.1/32 is directly connected, GigabitEthernet0/1.100
+S        10.9.0.0/16 is directly connected, Null0
+C        10.255.0.1/32 is directly connected, Loopback0
+      172.16.0.0/24 is subnetted, 1 subnets
+S        172.16.5.0 [1/0] via 10.0.0.1
+      192.168.50.0/24 is subnetted, 1 subnets
+O E2     192.168.50.0 [110/20] via 10.0.0.1, 01:12:33, GigabitEthernet0/0
+      203.0.113.0/24 is variably subnetted, 2 subnets, 2 masks
+C        203.0.113.0/29 is directly connected, GigabitEthernet0/3
+L        203.0.113.1/32 is directly connected, GigabitEthernet0/3
+### show ip route vrf CUST-A
+
+Routing Table: CUST-A
+Codes: L - local, C - connected, S - static, R - RIP, M - mobile, B - BGP
+       D - EIGRP, EX - EIGRP external, O - OSPF, IA - OSPF inter area
+       N1 - OSPF NSSA external type 1, N2 - OSPF NSSA external type 2
+       E1 - OSPF external type 1, E2 - OSPF external type 2
+       i - IS-IS, su - IS-IS summary, L1 - IS-IS level-1, L2 - IS-IS level-2
+       ia - IS-IS inter area, * - candidate default, U - per-user static route
+       o - ODR, P - periodic downloaded static route, H - NHRP, l - LISP
+       a - application route
+       + - replicated route, % - next hop override
+
+Gateway of last resort is not set
+
+      10.0.0.0/8 is variably subnetted, 3 subnets, 2 masks
+C        10.1.20.0/24 is directly connected, GigabitEthernet0/2
+L        10.1.20.1/32 is directly connected, GigabitEthernet0/2
+S        10.1.30.0/24 [1/0] via 10.1.20.254
+### show ipv6 route
+IPv6 Routing Table - default - 7 entries
+Codes: C - Connected, L - Local, S - Static, U - Per-user Static route
+       B - BGP, R - RIP, H - NHRP, I1 - ISIS L1
+       I2 - ISIS L2, IA - ISIS interarea, IS - ISIS summary, D - EIGRP
+       EX - EIGRP external, ND - ND Default, NDp - ND Prefix, DCE - Destination
+       NDr - Redirect, O - OSPF Intra, OI - OSPF Inter, OE1 - OSPF ext 1
+       OE2 - OSPF ext 2, ON1 - OSPF NSSA ext 1, ON2 - OSPF NSSA ext 2
+       la - LISP alt, lr - LISP site-registrations, ld - LISP dyn-eid
+       a - Application
+S   ::/0 [1/0]
+     via 2001:DB8:0:1::1
+C   2001:DB8:0:1::/64 [0/0]
+     via GigabitEthernet0/0, directly connected
+L   2001:DB8:0:1::2/128 [0/0]
+     via GigabitEthernet0/0, receive
+C   FD00:1:100::/64 [0/0]
+     via GigabitEthernet0/1.100, directly connected
+L   FD00:1:100::1/128 [0/0]
+     via GigabitEthernet0/1.100, receive
+S   FD00:1:200::/64 [1/0]
+     via 2001:DB8:0:1::1
+L   FF00::/8 [0/0]
+     via Null0, receive
+### show ip arp
+Protocol  Address          Age (min)  Hardware Addr   Type   Interface
+Internet  10.0.0.1                2   0c11.2233.0001  ARPA   GigabitEthernet0/0
+Internet  10.0.0.2                -   0c11.2233.0002  ARPA   GigabitEthernet0/0
+Internet  10.1.100.1              -   0c11.2233.0003  ARPA   GigabitEthernet0/1.100
+Internet  10.1.100.20            14   0050.56aa.0020  ARPA   GigabitEthernet0/1.100
+Internet  10.1.100.21             0   Incomplete      ARPA
+Internet  203.0.113.1             -   0c11.2233.0004  ARPA   GigabitEthernet0/3
+Internet  203.0.113.6            41   0000.0c9f.f006  ARPA   GigabitEthernet0/3
+### show ip arp vrf CUST-A
+Protocol  Address          Age (min)  Hardware Addr   Type   Interface
+Internet  10.1.20.1               -   0c11.2233.0005  ARPA   GigabitEthernet0/2
+Internet  10.1.20.50              7   0050.56aa.2050  ARPA   GigabitEthernet0/2
+Internet  10.1.20.254             1   0050.56aa.20fe  ARPA   GigabitEthernet0/2

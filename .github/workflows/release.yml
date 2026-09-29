@@ -72,3 +72,71 @@ jobs:
       # by the id-token permission above, which is why that permission is
       # required rather than merely nice for provenance.
       - run: npm publish --provenance --access public
+
+  # The nxip-agent container: the same CLI, installed from the package the
+  # job above just published, so the image and the npm release of one tag
+  # are one artefact. Pushed to GitHub's own registry with the repository's
+  # GITHUB_TOKEN, so there is no new secret (docs/specs/nxip-agent-cisco.md).
+  image:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # npm serves a fresh version's metadata before its tarball for a few
+      # minutes after publish, and `npm install` in the build would meet the
+      # 404 and fail the whole release. Poll the tarball URL until it is
+      # there, up to ten minutes, before building.
+      # The tag is v0.15.0; the package, the image tag and the version the
+      # image prints are all 0.15.0.
+      - name: Version from the tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for the published tarball to be downloadable
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          URL="https://registry.npmjs.org/nxip-cli/-/nxip-cli-${VERSION}.tgz"
+          for attempt in $(seq 1 60); do
+            if curl -sSfI "$URL" > /dev/null; then
+              echo "nxip-cli@${VERSION} is downloadable"
+              exit 0
+            fi
+            echo "attempt ${attempt}: not yet at ${URL}"
+            sleep 10
+          done
+          echo "nxip-cli@${VERSION} never became downloadable"
+          exit 1
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          build-args: |
+            NXIP_VERSION=${{ steps.version.outputs.version }}
+          tags: |
+            ghcr.io/uk-sw/nxip-agent:${{ steps.version.outputs.version }}
+            ghcr.io/uk-sw/nxip-agent:latest
+
+      # The image is only a release if it runs. Pulling what was just pushed
+      # and asking for the version is the check the spec names.
+      - name: Smoke test the image
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          PRINTED="$(docker run --rm "ghcr.io/uk-sw/nxip-agent:${VERSION}" --version)"
+          if [ "$PRINTED" != "$VERSION" ]; then
+            echo "Image printed version '$PRINTED', expected '$VERSION'."
+            exit 1
+          fi
+          echo "ghcr.io/uk-sw/nxip-agent:${VERSION} prints ${PRINTED}"

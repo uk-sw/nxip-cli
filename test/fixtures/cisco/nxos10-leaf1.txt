@@ -1,0 +1,72 @@
+!! SYNTHETIC CAPTURE. Written by hand from the documented NX-OS 10 `| json`
+!! shapes, not taken from a device. Replace with a real capture from a
+!! Nexus 9000v in CML-Free before trusting the parsers on real gear. The
+!! single-row-as-object quirk (ROW_x is an object when a table has one row
+!! and an array otherwise) is reproduced on purpose in several tables.
+!! Every "### <command>" line starts that command's output, as the agent
+!! would receive it after `terminal length 0`. Lines starting "!!" are
+!! this header only and appear in no command's output.
+!!
+!! Device: dc-leaf1, NX-OS 10.3(1), Nexus 9300v. Vlan100 in the default
+!! VRF, a /31 transit on Eth1/1, mgmt0 in the management VRF, Vlan200 in
+!! VRF TENANT-B, a static default, an OSPF route, a BGP discard route.
+### show version
+Cisco Nexus Operating System (NX-OS) Software
+TAC support: http://www.cisco.com/tac
+Copyright (C) 2002-2023, Cisco and/or its affiliates.
+All rights reserved.
+The copyrights to certain works contained in this software are
+owned by other third parties and used and distributed under their own
+licenses, such as open source.  This software is provided "as is," and unless
+otherwise stated, there is no warranty, express or implied, including but not
+limited to warranties of merchantability and fitness for a particular purpose.
+Certain components of this software are licensed under
+the GNU General Public License (GPL) version 2.0 or
+GNU General Public License (GPL) version 3.0  or the GNU
+Lesser General Public License (LGPL) Version 2.1 or
+Lesser General Public License (LGPL) Version 2.0.
+A copy of each such license is available at
+http://www.opensource.org/licenses/gpl-2.0.php and
+http://opensource.org/licenses/gpl-3.0.html and
+http://www.opensource.org/licenses/lgpl-2.1.php and
+http://www.gnu.org/licenses/old-licenses/library.txt.
+
+Software
+  BIOS: version
+ NXOS: version 10.3(1)
+  BIOS compile time:
+  NXOS image file is: bootflash:///nxos64-cs.10.3.1.F.bin
+  NXOS compile time:  8/19/2022 12:00:00 [08/19/2022 21:24:12]
+
+Hardware
+  cisco Nexus9000 C9300v Chassis
+   Intel(R) Xeon(R) Platinum 8259CL CPU @ 2.50GHz with 16400072 kB of memory.
+  Processor Board ID 9ABCDEF0123
+
+  Device name: dc-leaf1
+  bootflash:    4287040 kB
+Kernel uptime is 5 day(s), 2 hour(s), 17 minute(s), 45 second(s)
+
+Last reset
+  Reason: Unknown
+  System version:
+  Service:
+
+plugin
+  Core Plugin, Ethernet Plugin
+
+Active Package(s):
+### show version | json
+{"header_str": "Cisco Nexus Operating System (NX-OS) Software\nTAC support: http://www.cisco.com/tac\nCopyright (C) 2002-2023, Cisco and/or its affiliates.\nAll rights reserved.\n", "bios_ver_str": "", "kickstart_ver_str": "10.3(1)", "nxos_ver_str": "10.3(1)", "bios_cmpl_time": "", "kick_file_name": "bootflash:///nxos64-cs.10.3.1.F.bin", "nxos_file_name": "bootflash:///nxos64-cs.10.3.1.F.bin", "kick_cmpl_time": "8/19/2022 12:00:00", "nxos_cmpl_time": "8/19/2022 12:00:00", "kick_tmstmp": "08/19/2022 21:24:12", "nxos_tmstmp": "08/19/2022 21:24:12", "chassis_id": "Nexus9000 C9300v Chassis", "cpu_name": "Intel(R) Xeon(R) Platinum 8259CL CPU @ 2.50GHz", "memory": 16400072, "mem_type": "kB", "proc_board_id": "9ABCDEF0123", "host_name": "dc-leaf1", "bootflash_size": 4287040, "kern_uptm_days": 5, "kern_uptm_hrs": 2, "kern_uptm_mins": 17, "kern_uptm_secs": 45, "rr_reason": "Unknown", "rr_sys_ver": "", "rr_service": "", "plugins": "Core Plugin, Ethernet Plugin", "manufacturer": "Cisco Systems, Inc.", "TABLE_package_list": {"ROW_package_list": {"package_id": ""}}}
+### show vrf all | json
+{"TABLE_vrf": {"ROW_vrf": [{"vrf_name": "TENANT-B", "vrf_id": 3, "vrf_state": "Up", "vrf_reason": "--"}, {"vrf_name": "default", "vrf_id": 1, "vrf_state": "Up", "vrf_reason": "--"}, {"vrf_name": "management", "vrf_id": 2, "vrf_state": "Up", "vrf_reason": "--"}]}}
+### show ip interface vrf all | json
+{"TABLE_intf": {"ROW_intf": [{"vrf-name-out": "default", "intf-name": "Vlan100", "proto-state": "up", "link-state": "up", "admin-state": "up", "iod": 6, "prefix": "10.2.0.1", "subnet": "10.2.0.0", "masklen": 22, "masklen1": 22, "bcast": "10.2.3.255", "mtu": 1500, "dir-bcast": "disabled", "TABLE_secondary_address": {"ROW_secondary_address": {"prefix1": "10.2.4.1", "subnet1": "10.2.4.0", "masklen1": 24, "bcast1": "10.2.4.255"}}}, {"vrf-name-out": "default", "intf-name": "Ethernet1/1", "proto-state": "up", "link-state": "up", "admin-state": "up", "iod": 40, "prefix": "10.0.2.1", "subnet": "10.0.2.0", "masklen": 31, "masklen1": 31, "mtu": 1500}, {"vrf-name-out": "default", "intf-name": "loopback0", "proto-state": "up", "link-state": "up", "admin-state": "up", "iod": 4, "prefix": "10.255.0.3", "subnet": "10.255.0.3", "masklen": 32, "masklen1": 32, "mtu": 1500}, {"vrf-name-out": "management", "intf-name": "mgmt0", "proto-state": "up", "link-state": "up", "admin-state": "up", "iod": 2, "prefix": "192.168.1.10", "subnet": "192.168.1.0", "masklen": 24, "masklen1": 24, "mtu": 1500}, {"vrf-name-out": "TENANT-B", "intf-name": "Vlan200", "proto-state": "up", "link-state": "up", "admin-state": "up", "iod": 7, "prefix": "10.3.0.1", "subnet": "10.3.0.0", "masklen": 24, "masklen1": 24, "mtu": 1500}]}}
+### show ipv6 interface vrf all | json
+{"TABLE_intf": {"ROW_intf": {"vrf-name-out": "default", "intf-name": "Vlan100", "proto-state": "up", "link-state": "up", "admin-state": "up", "iod": 6, "TABLE_addr": {"ROW_addr": {"addr": "fd00:2::1/64"}}, "linklocal-addr": "fe80::1", "mtu": 1500}}}
+### show ip route vrf all | json
+{"TABLE_vrf": {"ROW_vrf": [{"vrf-name-out": "TENANT-B", "TABLE_addrf": {"ROW_addrf": {"addrf": "ipv4", "TABLE_prefix": {"ROW_prefix": [{"ipprefix": "10.3.0.0/24", "ucast-nhops": 1, "mcast-nhops": 0, "attached": "true", "TABLE_path": {"ROW_path": {"ipnexthop": "10.3.0.1", "ifname": "Vlan200", "uptime": "P5DT2H", "pref": 0, "metric": 0, "clientname": "direct", "ubest": "true"}}}, {"ipprefix": "10.3.0.1/32", "ucast-nhops": 1, "mcast-nhops": 0, "attached": "true", "TABLE_path": {"ROW_path": {"ipnexthop": "10.3.0.1", "ifname": "Vlan200", "uptime": "P5DT2H", "pref": 0, "metric": 0, "clientname": "local", "ubest": "true"}}}, {"ipprefix": "10.7.0.0/24", "ucast-nhops": 1, "mcast-nhops": 0, "attached": "false", "TABLE_path": {"ROW_path": {"ipnexthop": "10.3.0.254", "uptime": "P5DT2H", "pref": 1, "metric": 0, "clientname": "static", "ubest": "true"}}}]}}}}, {"vrf-name-out": "default", "TABLE_addrf": {"ROW_addrf": {"addrf": "ipv4", "TABLE_prefix": {"ROW_prefix": [{"ipprefix": "0.0.0.0/0", "ucast-nhops": 1, "mcast-nhops": 0, "attached": "false", "TABLE_path": {"ROW_path": {"ipnexthop": "10.0.2.0", "uptime": "P5DT2H", "pref": 1, "metric": 0, "clientname": "static", "ubest": "true"}}}, {"ipprefix": "10.0.2.0/31", "ucast-nhops": 1, "mcast-nhops": 0, "attached": "true", "TABLE_path": {"ROW_path": {"ipnexthop": "10.0.2.1", "ifname": "Eth1/1", "uptime": "P5DT2H", "pref": 0, "metric": 0, "clientname": "direct", "ubest": "true"}}}, {"ipprefix": "10.0.2.1/32", "ucast-nhops": 1, "mcast-nhops": 0, "attached": "true", "TABLE_path": {"ROW_path": {"ipnexthop": "10.0.2.1", "ifname": "Eth1/1", "uptime": "P5DT2H", "pref": 0, "metric": 0, "clientname": "local", "ubest": "true"}}}, {"ipprefix": "10.2.0.0/22", "ucast-nhops": 1, "mcast-nhops": 0, "attached": "true", "TABLE_path": {"ROW_path": {"ipnexthop": "10.2.0.1", "ifname": "Vlan100", "uptime": "P5DT2H", "pref": 0, "metric": 0, "clientname": "direct", "ubest": "true"}}}, {"ipprefix": "10.2.0.1/32", "ucast-nhops": 1, "mcast-nhops": 0, "attached": "true", "TABLE_path": {"ROW_path": {"ipnexthop": "10.2.0.1", "ifname": "Vlan100", "uptime": "P5DT2H", "pref": 0, "metric": 0, "clientname": "local", "ubest": "true"}}}, {"ipprefix": "10.2.4.0/24", "ucast-nhops": 1, "mcast-nhops": 0, "attached": "true", "TABLE_path": {"ROW_path": {"ipnexthop": "10.2.4.1", "ifname": "Vlan100", "uptime": "P5DT2H", "pref": 0, "metric": 0, "clientname": "direct", "ubest": "true"}}}, {"ipprefix": "10.4.0.0/16", "ucast-nhops": 1, "mcast-nhops": 0, "attached": "false", "TABLE_path": {"ROW_path": {"ipnexthop": "10.0.2.0", "ifname": "Eth1/1", "uptime": "P5DT1H", "pref": 110, "metric": 41, "clientname": "ospf-1", "type": "intra", "ubest": "true"}}}, {"ipprefix": "10.5.0.0/24", "ucast-nhops": 1, "mcast-nhops": 0, "attached": "false", "TABLE_path": {"ROW_path": {"ipnexthop": "10.0.2.0", "uptime": "P5DT2H", "pref": 1, "metric": 0, "clientname": "static", "ubest": "true"}}}, {"ipprefix": "10.6.0.0/16", "ucast-nhops": 1, "mcast-nhops": 0, "attached": "false", "TABLE_path": {"ROW_path": {"ipnexthop": "0.0.0.0", "ifname": "Null0", "uptime": "P5DT1H", "pref": 220, "metric": 0, "clientname": "bgp-65000", "type": "discard", "ubest": "true"}}}, {"ipprefix": "10.8.0.0/24", "ucast-nhops": 2, "mcast-nhops": 0, "attached": "false", "TABLE_path": {"ROW_path": [{"ipnexthop": "10.0.2.0", "ifname": "Eth1/1", "uptime": "P5DT1H", "pref": 20, "metric": 0, "clientname": "bgp-65000", "type": "external", "ubest": "true"}, {"ipnexthop": "10.2.0.9", "ifname": "Vlan100", "uptime": "P5DT1H", "pref": 20, "metric": 0, "clientname": "bgp-65000", "type": "external", "ubest": "true"}]}}, {"ipprefix": "10.255.0.3/32", "ucast-nhops": 1, "mcast-nhops": 0, "attached": "true", "TABLE_path": {"ROW_path": {"ipnexthop": "10.255.0.3", "ifname": "Lo0", "uptime": "P5DT2H", "pref": 0, "metric": 0, "clientname": "local", "ubest": "true"}}}]}}}}, {"vrf-name-out": "management", "TABLE_addrf": {"ROW_addrf": {"addrf": "ipv4", "TABLE_prefix": {"ROW_prefix": [{"ipprefix": "0.0.0.0/0", "ucast-nhops": 1, "mcast-nhops": 0, "attached": "false", "TABLE_path": {"ROW_path": {"ipnexthop": "192.168.1.1", "uptime": "P5DT2H", "pref": 1, "metric": 0, "clientname": "static", "ubest": "true"}}}, {"ipprefix": "192.168.1.0/24", "ucast-nhops": 1, "mcast-nhops": 0, "attached": "true", "TABLE_path": {"ROW_path": {"ipnexthop": "192.168.1.10", "ifname": "mgmt0", "uptime": "P5DT2H", "pref": 0, "metric": 0, "clientname": "direct", "ubest": "true"}}}, {"ipprefix": "192.168.1.10/32", "ucast-nhops": 1, "mcast-nhops": 0, "attached": "true", "TABLE_path": {"ROW_path": {"ipnexthop": "192.168.1.10", "ifname": "mgmt0", "uptime": "P5DT2H", "pref": 0, "metric": 0, "clientname": "local", "ubest": "true"}}}]}}}}]}}
+### show ipv6 route vrf all | json
+{"TABLE_vrf": {"ROW_vrf": {"vrf-name-out": "default", "TABLE_addrf": {"ROW_addrf": {"addrf": "ipv6", "TABLE_prefix": {"ROW_prefix": [{"ipprefix": "fd00:2::/64", "ucast-nhops": 1, "mcast-nhops": 0, "attached": "true", "TABLE_path": {"ROW_path": {"ipnexthop": "fd00:2::1", "ifname": "Vlan100", "uptime": "P5DT2H", "pref": 0, "metric": 0, "clientname": "direct", "ubest": "true"}}}, {"ipprefix": "fd00:2::1/128", "ucast-nhops": 1, "mcast-nhops": 0, "attached": "true", "TABLE_path": {"ROW_path": {"ipnexthop": "fd00:2::1", "ifname": "Vlan100", "uptime": "P5DT2H", "pref": 0, "metric": 0, "clientname": "local", "ubest": "true"}}}, {"ipprefix": "fd00:3::/48", "ucast-nhops": 1, "mcast-nhops": 0, "attached": "false", "TABLE_path": {"ROW_path": {"ipnexthop": "fd00:2::2", "uptime": "P5DT2H", "pref": 1, "metric": 0, "clientname": "static", "ubest": "true"}}}]}}}}}}
+### show ip arp vrf all | json
+{"TABLE_vrf": {"ROW_vrf": [{"vrf-name-out": "default", "cnt-total": 4, "TABLE_adj": {"ROW_adj": [{"intf-out": "Vlan100", "ip-addr-out": "10.2.0.9", "time-stamp": "00:02:11", "mac": "0050.56aa.0209"}, {"intf-out": "Vlan100", "ip-addr-out": "10.2.1.40", "time-stamp": "00:14:52", "mac": "0050.56aa.0140"}, {"intf-out": "Vlan100", "ip-addr-out": "10.2.1.41", "time-stamp": "00:00:07", "mac": "INCOMPLETE", "flags": "R"}, {"intf-out": "Ethernet1/1", "ip-addr-out": "10.0.2.0", "time-stamp": "00:00:31", "mac": "0c33.4455.0002"}]}}, {"vrf-name-out": "TENANT-B", "cnt-total": 1, "TABLE_adj": {"ROW_adj": {"intf-out": "Vlan200", "ip-addr-out": "10.3.0.77", "time-stamp": "00:05:40", "mac": "0050.56aa.0377"}}}]}}
