@@ -265,7 +265,11 @@ export function parseIosIpv6Route(text: string, vrf = 'default'): RouteEntry[] {
       continue;
     }
 
-    const entry = /^([A-Za-z]{1,3}\*?|ND\w*)\s+([0-9A-Fa-f:.]+\/\d{1,3})\s+\[(\d+)\/(\d+)\]/.exec(line);
+    // The trailing digit is part of the code, never of the prefix: OE1,
+    // OE2, ON1, ON2, I1 and I2 are all real codes. Without it those lines
+    // did not match at all, and their `via` lines were then hung on the
+    // entry above, which loses a route and corrupts another.
+    const entry = /^([A-Za-z]{1,3}\d?\*?|ND\w*)\s+([0-9A-Fa-f:.]+\/\d{1,3})\s+\[(\d+)\/(\d+)\]/.exec(line);
     if (entry) {
       const range = parseIpv6Cidr(entry[2]);
       current = null;
