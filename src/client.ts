@@ -128,26 +128,92 @@ function withOperationOutcomes(message: string, operations: unknown): string {
   return failed.length > 0 ? `${message} ${failed.join(' ')}` : message;
 }
 
+// How many times a 429 is retried before its own message is surfaced, and
+// the longest single wait. The API's limits are per minute (a per-IP layer
+// and a per-organization, tier-aware one, both in its app.ts), so a minute
+// always reaches a fresh window and a longer Retry-After is not believed.
+// Three retries means a run that keeps hitting the limit still ends, with
+// the API's own words, within about three minutes.
+export const MAX_RATE_LIMIT_RETRIES = 3;
+export const MAX_RATE_LIMIT_WAIT_MS = 60_000;
+
+/**
+ * How long a 429's Retry-After asks for, in milliseconds, capped at
+ * MAX_RATE_LIMIT_WAIT_MS. The header may be whole seconds or an HTTP date
+ * (RFC 9110 section 10.2.3); the API sends seconds, but a proxy in front of
+ * it may not. A missing or unreadable header waits the full cap: the windows
+ * are a minute long, so a shorter guess would most likely spend an attempt
+ * on another 429.
+ */
+export function retryAfterMs(header: string | null, now: number = Date.now()): number {
+  const value = header?.trim() ?? '';
+  if (/^\d+$/.test(value)) return Math.min(Number(value) * 1000, MAX_RATE_LIMIT_WAIT_MS);
+  const at = Date.parse(value);
+  if (value !== '' && !Number.isNaN(at)) return Math.min(Math.max(at - now, 0), MAX_RATE_LIMIT_WAIT_MS);
+  return MAX_RATE_LIMIT_WAIT_MS;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Every API call goes through here, and a 429 is the one thing retried.
+ *
+ * Retrying a create is safe on a 429 and on nothing else. Both of the API's
+ * rate-limit layers reject before any route handler runs (onRequest and
+ * preHandler hooks, confirmed in the weft triage, item 1), so a 429 means
+ * nothing was allocated and the same POST can be sent again. A timeout or a
+ * 5xx on a create gives no such guarantee: the block may have been committed
+ * after the client stopped listening, and a blind retry would allocate a
+ * second one. Those stay errors until the API accepts an idempotency key.
+ *
+ * Each wait is announced on stderr, never stdout: `tree --json` and the MCP
+ * server use stdout for a document or a protocol, and a pause with no
+ * explanation looks like a hang.
+ */
 async function request<T>(
   options: NxipClientOptions,
   path: string,
   body: unknown,
   method: 'GET' | 'POST' = 'POST'
 ): Promise<T> {
-  const response = await fetch(`${options.baseUrl}${path}`, {
-    method,
-    headers: {
-      'content-type': 'application/json',
-      [API_KEY_HEADER]: options.apiKey,
-      // Sent only when a customer organization was actually resolved, never
-      // as an empty string: an empty header would ask the API to act on
-      // behalf of "" rather than leaving the caller's own organization alone.
-      ...(options.organizationId ? { [ORGANIZATION_HEADER]: options.organizationId } : {}),
-    },
-    body: method === 'GET' ? undefined : JSON.stringify(body),
-    signal: options.timeoutMs ? AbortSignal.timeout(options.timeoutMs) : undefined,
-  });
+  for (let retry = 0; ; retry++) {
+    const response = await fetch(`${options.baseUrl}${path}`, {
+      method,
+      headers: {
+        'content-type': 'application/json',
+        [API_KEY_HEADER]: options.apiKey,
+        // Sent only when a customer organization was actually resolved, never
+        // as an empty string: an empty header would ask the API to act on
+        // behalf of "" rather than leaving the caller's own organization alone.
+        ...(options.organizationId ? { [ORGANIZATION_HEADER]: options.organizationId } : {}),
+      },
+      body: method === 'GET' ? undefined : JSON.stringify(body),
+      signal: options.timeoutMs ? AbortSignal.timeout(options.timeoutMs) : undefined,
+    });
 
+    if (response.status === 429 && retry < MAX_RATE_LIMIT_RETRIES) {
+      // Read and discarded so the connection is released before the wait.
+      await response.text().catch(() => undefined);
+      const waitMs = retryAfterMs(response.headers.get('retry-after'));
+      console.error(
+        `nxip: rate limited by the API (HTTP 429). Waiting ${Math.ceil(waitMs / 1000)}s before retrying ${method} ${path} (retry ${retry + 1} of ${MAX_RATE_LIMIT_RETRIES}).`
+      );
+      await sleep(waitMs);
+      continue;
+    }
+
+    return parseResponse<T>(response);
+  }
+}
+
+/**
+ * The body of a final response. A 429 that has used up its retries lands
+ * here like any other error status, so the caller sees the API's own
+ * message ("Rate limit exceeded, retry in 57 seconds"), not one of ours.
+ */
+async function parseResponse<T>(response: Response): Promise<T> {
   const text = await response.text();
   let parsed: unknown;
   try {

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createSubnet,
   getSubnet,
@@ -8,6 +8,7 @@ import {
   previewSubnet,
   resolveClientOptions,
   resolveTargetLine,
+  retryAfterMs,
 } from '../src/client.js';
 
 describe('resolveClientOptions', () => {
@@ -303,5 +304,124 @@ describe('request errors and paths', () => {
     vi.stubGlobal('fetch', fetchMock);
     await getSubnet(options, 'a/b?c');
     expect(fetchMock.mock.calls[0]?.[0]).toBe('https://example.test/v1/subnets/a%2Fb%3Fc');
+  });
+});
+
+describe('a 429 is waited out and retried (weft triage item 1)', () => {
+  const options = { apiKey: 'k', baseUrl: 'https://example.test' };
+  const limited = (retryAfter: string | null, message = 'Rate limit exceeded, retry in 2 seconds') =>
+    new Response(JSON.stringify({ statusCode: 429, error: 'Error', message }), {
+      status: 429,
+      headers: retryAfter === null ? {} : { 'retry-after': retryAfter },
+    });
+  const created = () => new Response(JSON.stringify({ id: 'sub_1', cidr: '10.0.0.0/26' }), { status: 201 });
+  const body = { family: 'IPV4' as const, prefixLength: 26, environment: 'production', region: 'us-east-1' };
+
+  let logged: string[];
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-10-07T12:00:00.000Z'));
+    logged = [];
+    vi.spyOn(console, 'error').mockImplementation((line: unknown) => {
+      logged.push(String(line));
+    });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('waits the Retry-After seconds, then retries the create and succeeds', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(limited('2')).mockResolvedValueOnce(created());
+    vi.stubGlobal('fetch', fetchMock);
+
+    const pending = createSubnet(options, body);
+    await vi.advanceTimersByTimeAsync(1999);
+    // Not a moment early: the API said two seconds.
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(pending).resolves.toEqual({ id: 'sub_1', cidr: '10.0.0.0/26' });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // The same create, sent again unchanged.
+    expect(fetchMock.mock.calls[1][1].body).toBe(fetchMock.mock.calls[0][1].body);
+    expect(logged).toEqual([
+      'nxip: rate limited by the API (HTTP 429). Waiting 2s before retrying POST /v1/subnets (retry 1 of 3).',
+    ]);
+  });
+
+  it('honours Retry-After given as an HTTP date', async () => {
+    const at = new Date(Date.now() + 5000).toUTCString();
+    const fetchMock = vi.fn().mockResolvedValueOnce(limited(at)).mockResolvedValueOnce(created());
+    vi.stubGlobal('fetch', fetchMock);
+
+    const pending = createSubnet(options, body);
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(pending).resolves.toMatchObject({ id: 'sub_1' });
+    expect(logged[0]).toContain('Waiting 5s');
+  });
+
+  it('caps a long Retry-After at a minute', async () => {
+    const fetchMock = vi.fn().mockResolvedValueOnce(limited('3600')).mockResolvedValueOnce(created());
+    vi.stubGlobal('fetch', fetchMock);
+
+    const pending = createSubnet(options, body);
+    await vi.advanceTimersByTimeAsync(60_000);
+    await expect(pending).resolves.toMatchObject({ id: 'sub_1' });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('gives up after three retries with the 429\'s own message', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => limited('1', 'Rate limit exceeded, retry in 57 seconds'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const pending = createSubnet(options, body);
+    const settled = pending.catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(10_000);
+    const error = await settled;
+
+    expect(error).toBeInstanceOf(NxipApiError);
+    expect((error as NxipApiError).status).toBe(429);
+    expect((error as NxipApiError).message).toBe('Rate limit exceeded, retry in 57 seconds');
+    // One first attempt plus three retries, and no more.
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(logged).toHaveLength(3);
+  });
+
+  it('does not retry a 500, even on a GET', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ message: 'boom' }), { status: 500 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const settled = getSubnet(options, 'sub_1').catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(120_000);
+    const error = await settled;
+
+    expect((error as NxipApiError).status).toBe(500);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(logged).toEqual([]);
+  });
+
+  it('does not retry a 500 on a create', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ message: 'boom' }), { status: 500 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const settled = createSubnet(options, body).catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(((await settled) as NxipApiError).status).toBe(500);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('retryAfterMs', () => {
+  const now = Date.parse('2026-10-07T12:00:00.000Z');
+  it('reads whole seconds', () => expect(retryAfterMs('57', now)).toBe(57_000));
+  it('reads an HTTP date', () => expect(retryAfterMs('Wed, 07 Oct 2026 12:00:09 GMT', now)).toBe(9_000));
+  it('treats a date in the past as no wait', () => expect(retryAfterMs('Wed, 07 Oct 2026 11:00:00 GMT', now)).toBe(0));
+  it('caps at a minute', () => expect(retryAfterMs('600', now)).toBe(60_000));
+  it('waits the cap when the header is missing or unreadable', () => {
+    expect(retryAfterMs(null, now)).toBe(60_000);
+    expect(retryAfterMs('soon', now)).toBe(60_000);
   });
 });
