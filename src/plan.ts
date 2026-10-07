@@ -283,6 +283,27 @@ export function formatPlan(planned: PlannedSubnet[]): string {
   return lines.join('\n');
 }
 
+/**
+ * 1 when the plan says an apply of this manifest would leave something not
+ * created, so CI can stop before applying (weft triage item 4b). Already
+ * existing is not a failure, and neither is a subnet waiting on a pool that
+ * this same manifest creates first: both apply cleanly. With pools in the
+ * manifest this uses the same annotation the printed plan does, so the exit
+ * code and the "blocked" count always agree.
+ *
+ * Entries nested under another entry in the file are not previewed, so they
+ * cannot make a plan fail here; apply's own exit code still covers them.
+ */
+export function planExitCode(planned: PlannedSubnet[], pools: PlannedPool[]): 0 | 1 {
+  if (pools.length > 0) {
+    const blocked = annotateAgainstPools(planned, pools).some(
+      (item) => !item.planned.result.wouldSucceed && (item.blocker === 'real' || item.blocker === 'pool-key-taken')
+    );
+    return blocked ? 1 : 0;
+  }
+  return planned.some((item) => !item.result.wouldSucceed && item.result.reason !== 'already-exists') ? 1 : 0;
+}
+
 export interface PlannedPool {
   name: string;
   body: import('./types.js').NxipPoolBody;

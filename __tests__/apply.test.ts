@@ -13,12 +13,12 @@ describe('formatApplyResults', () => {
     expect(output).toContain('+ payments: created at 10.0.4.0/24 (id sub_1)');
     expect(output).toContain('x overflow: skipped, full: Pool is full');
     expect(output).toContain('! race-loser: failed, CIDR was taken by a concurrent request');
-    expect(output).toContain('Apply complete: 1 created, 0 already existed, 2 not created.');
+    expect(output).toContain('Apply complete: 1 created, 0 already existed, 1 skipped, 1 failed.');
   });
 
   it('reports zero created when every subnet was skipped', () => {
     const results: ApplyResult[] = [{ name: 'a', kind: 'subnet' as const, outcome: 'skipped', detail: 'full: Pool is full' }];
-    expect(formatApplyResults(results)).toContain('Apply complete: 0 created, 0 already existed, 1 not created.');
+    expect(formatApplyResults(results)).toContain('Apply complete: 0 created, 0 already existed, 1 skipped, 0 failed.');
   });
 });
 
@@ -91,7 +91,7 @@ describe('re-applying something already imported', () => {
 
     const output = formatApplyResults(await applyManifest(options, entries));
     expect(output).toContain('= imported-vpc: already exists');
-    expect(output).toContain('Apply complete: 0 created, 2 already existed, 0 not created.');
+    expect(output).toContain('Apply complete: 0 created, 2 already existed, 0 skipped, 0 failed.');
   });
 });
 

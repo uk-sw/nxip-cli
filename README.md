@@ -531,6 +531,25 @@ Plan: 1 to create, 0 would fail.
 Terraform), then creates whatever the plan predicted would succeed. Pass
 `--auto-approve` to skip the prompt, e.g. in CI.
 
+Applying the same manifest again is safe. An entry with a `cidr` is matched
+on that CIDR. An entry with only a `prefix_length` is matched on its `name`
+plus where it would be placed (the same environment, region and family, or
+the same parent), and reported as already existing instead of being
+allocated a second time. If two existing subnets match, that entry fails
+and names both rather than guessing. Renaming a subnet in the dashboard
+breaks the match, so the next apply would allocate a new one.
+
+#### Exit codes
+
+| Command | Exit 0 | Exit 1 |
+|---|---|---|
+| `plan` | Every entry would be created, already exists, or waits on a pool the same manifest creates first | Any entry would fail or is blocked |
+| `apply` | Every entry was created or already existed (so a second run of the same manifest is green) | Any entry failed, or was skipped for a reason other than already existing (no pool, its parent was not created, a naming clash) |
+
+Both also exit 1 on a missing API key, an unreadable or invalid manifest,
+or an API error that stops the run. The summary line gives the counts, for
+example `Apply complete: 1 created, 0 already existed, 1 skipped, 0 failed.`
+
 ### Managing a customer organization (`--organization`)
 
 If your nxip organization is a provider managing customers (see

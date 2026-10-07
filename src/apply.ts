@@ -37,8 +37,21 @@ export async function applyPools(options: NxipClientOptions, pools: PoolEntry[])
         p.cidr === pool.body.cidr ||
         (p.environment === pool.body.environment && p.region === pool.body.region && p.family === pool.body.family)
     );
+    // The same CIDR is this pool, already in place: existing, which a re-run
+    // has to report as a success. The same environment, region and family on
+    // a different CIDR is not: the manifest's pool was not created, and plan
+    // already calls that a naming clash, so apply must not exit 0 on it.
+    if (already && already.cidr === pool.body.cidr) {
+      results.push({ name: pool.name, kind: 'pool', outcome: 'existing', detail: `${already.cidr} (id ${already.id})` });
+      continue;
+    }
     if (already) {
-      results.push({ name: pool.name, kind: 'pool', outcome: 'skipped', detail: `already exists as ${already.cidr}` });
+      results.push({
+        name: pool.name,
+        kind: 'pool',
+        outcome: 'skipped',
+        detail: `environment "${pool.body.environment}" in ${pool.body.region} already belongs to a pool on ${already.cidr}, not ${pool.body.cidr}`,
+      });
       continue;
     }
 
@@ -47,8 +60,11 @@ export async function applyPools(options: NxipClientOptions, pools: PoolEntry[])
       results.push({ name: pool.name, kind: 'pool', outcome: 'created', detail: `${created.cidr} (id ${created.id})` });
     } catch (error) {
       const message = error instanceof NxipApiError ? error.message : error instanceof Error ? error.message : String(error);
-      // A 409 means someone or something else created it between the read
-      // above and now, which is a success for our purposes, not a failure.
+      // A 409 is either a race (someone created it between the read above
+      // and now) or an overlap with another pool. It stays "skipped" rather
+      // than "failed", but the API does not say which of the two it was, so
+      // it is not counted as existing and the apply exits 1 either way: a
+      // re-run settles a race, and an overlap needs a person.
       const conflict = error instanceof NxipApiError && error.status === 409;
       results.push({ name: pool.name, kind: 'pool', outcome: conflict ? 'skipped' : 'failed', detail: message });
     }
@@ -198,10 +214,25 @@ export async function applyManifest(options: NxipClientOptions, entries: Manifes
   return results;
 }
 
+/**
+ * 0 when everything in the manifest is now in place, whether this run
+ * created it or it already existed, so the all-existing second run of a
+ * manifest loop is green. 1 when anything failed, or was skipped: by now
+ * every "already exists" is outcome 'existing', so a skip is always
+ * something that was not created and should have been (no pool, a parent
+ * that was not created, a naming clash). Exiting 0 on those let CI pass an
+ * apply that created nothing (weft triage item 4b).
+ */
+export function applyExitCode(results: ApplyResult[]): 0 | 1 {
+  return results.some((result) => result.outcome === 'failed' || result.outcome === 'skipped') ? 1 : 0;
+}
+
 export function formatApplyResults(results: ApplyResult[]): string {
   const lines: string[] = [];
   let created = 0;
   let existing = 0;
+  let skipped = 0;
+  let failed = 0;
 
   for (const result of results) {
     // Only pools are labelled: they are the new, less expected thing in a
@@ -215,8 +246,10 @@ export function formatApplyResults(results: ApplyResult[]): string {
       existing++;
       lines.push(`  = ${label}: already exists at ${result.detail}`);
     } else if (result.outcome === 'skipped') {
+      skipped++;
       lines.push(`  x ${label}: skipped, ${result.detail}`);
     } else {
+      failed++;
       lines.push(`  ! ${label}: failed, ${result.detail}`);
     }
   }
@@ -224,7 +257,8 @@ export function formatApplyResults(results: ApplyResult[]): string {
   lines.push('');
   // Existing entries are counted apart from failures: a re-run that finds
   // everything already in place is a success, and should read as one.
-  const failed = results.length - created - existing;
-  lines.push(`Apply complete: ${created} created, ${existing} already existed, ${failed} not created.`);
+  // Skipped and failed are counted apart too, and either makes the exit
+  // code 1 (applyExitCode), so a CI log says why the step went red.
+  lines.push(`Apply complete: ${created} created, ${existing} already existed, ${skipped} skipped, ${failed} failed.`);
   return lines.join('\n');
 }

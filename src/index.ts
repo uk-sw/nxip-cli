@@ -3,8 +3,8 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { resolveClientOptions, resolveTargetLine, listPools, listAllPoolDetails, listAllSubnets } from './client.js';
 import { ManifestError, parseFullManifest, type Manifest } from './manifest.js';
-import { formatPlan, planManifest, planPools, formatPoolPlan, annotateAgainstPools, formatAnnotatedPlan, formatNestedEntries, findCrossPoolOverlaps, formatCrossPoolOverlaps } from './plan.js';
-import { applyFullManifest, formatApplyResults } from './apply.js';
+import { formatPlan, planManifest, planPools, formatPoolPlan, annotateAgainstPools, formatAnnotatedPlan, formatNestedEntries, findCrossPoolOverlaps, formatCrossPoolOverlaps, planExitCode } from './plan.js';
+import { applyExitCode, applyFullManifest, formatApplyResults } from './apply.js';
 import { expandSiteSpec, renderManifest, SiteSpecError } from './site.js';
 import { readVersion } from './version.js';
 import { discoverAws, AwsScanError } from './aws.js';
@@ -207,6 +207,8 @@ function printUsage(stream: 'out' | 'err' = 'err') {
   write(`       ${CLI} agent --config <agent.yaml>   read devices on a schedule, file change proposals (needs NXIP_API_KEY)`);
   write(`       ${CLI} scaffold -f <site.yaml> [-o <manifest.yaml>]`);
   write(`       ${CLI} <plan|apply> -f <manifest.yaml> [--api-key KEY] [--url URL] [--organization ID] [--auto-approve]`);
+  write('                     plan exits 1 if any entry would fail, 0 otherwise (already existing is not a failure)');
+  write('                     apply exits 1 if any entry failed or was skipped, 0 when all were created or already existed');
   write(`       ${CLI} mcp [--read-only] [--organization ID]   MCP server on stdio, for AI agents (needs NXIP_API_KEY)`);
   write(`       ${CLI} tree [--pool ID|NAME] [--depth N] [--free] [--json] [--organization ID]`);
   write('                     every pool with its subnets nested beneath it; --free adds free space');
@@ -727,6 +729,8 @@ async function main() {
     console.log(poolPlan.length > 0 ? formatAnnotatedPlan(annotateAgainstPools(planned, poolPlan)) : formatPlan(planned));
     process.stdout.write(formatNestedEntries(manifest.subnets));
     process.stdout.write(formatCrossPoolOverlaps(findCrossPoolOverlaps(manifest.subnets, await listPoolsQuietly(options))));
+    // Exit codes are listed in printUsage and the README; keep all three in step.
+    if (planExitCode(planned, poolPlan) === 1) process.exitCode = 1;
     return;
   }
 
@@ -756,9 +760,7 @@ async function main() {
 
     const results = await applyFullManifest(options, manifest);
     console.log(formatApplyResults(results));
-    if (results.some((r) => r.outcome === 'failed')) {
-      process.exitCode = 1;
-    }
+    if (applyExitCode(results) === 1) process.exitCode = 1;
     return;
   }
 
