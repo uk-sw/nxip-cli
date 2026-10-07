@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { formatPlan, findCrossPoolOverlaps, formatCrossPoolOverlaps } from '../src/plan.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { formatPlan, findCrossPoolOverlaps, formatCrossPoolOverlaps, planManifest } from '../src/plan.js';
 import type { PlannedSubnet } from '../src/types.js';
 
 describe('formatPlan', () => {
@@ -204,5 +204,63 @@ describe('formatPlan failures name the block', () => {
     const out = formatPlan([failure('odd', {})] as never);
     expect(out).not.toContain('cidr:');
     expect(out).not.toContain('size:');
+  });
+});
+
+describe('planManifest recognises a prefix_length entry by name (weft triage item 4a)', () => {
+  const options = { apiKey: 'k', baseUrl: 'https://example.test' };
+  const entry = { name: 'app-a', body: { family: 'IPV4' as const, prefixLength: 26, environment: 'production', region: 'us-east-1', name: 'app-a' } };
+  const existing = (id: string, cidr: string) => ({
+    id, cidr, name: 'app-a', prefixLength: 26, family: 'IPV4' as const, environment: 'production', region: 'us-east-1',
+    ipPoolId: 'pool_1', parentSubnetId: null, kind: null, description: null, metadata: {}, createdAt: '', utilization: { registeredAddresses: 0 },
+  });
+
+  // Any preview is a test failure: a matched entry must never be sent to
+  // the preview, which would predict a second allocation.
+  function stub(list: unknown[]) {
+    const previews: unknown[] = [];
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string) => {
+      if (url.includes('/v1/subnets/preview')) {
+        previews.push(url);
+        return new Response(JSON.stringify({
+          wouldSucceed: true,
+          subnet: { cidr: '10.240.1.0/26', prefixLength: 26, family: 'IPV4', environment: 'production', region: 'us-east-1' },
+          container: { type: 'pool', id: 'pool_1', name: 'core' },
+          utilization: { before: {}, after: {} },
+        }), { status: 200 });
+      }
+      if (url.includes('/v1/subnets')) {
+        return new Response(JSON.stringify({ data: list, meta: { total: list.length, page: 1, limit: 100, totalPages: 1 } }), { status: 200 });
+      }
+      return new Response('{}', { status: 404 });
+    }));
+    return previews;
+  }
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('reports an entry already created by an earlier apply as existing, with the CIDR it holds', async () => {
+    const previews = stub([existing('sub_1', '10.240.0.0/26')]);
+    const planned = await planManifest(options, [entry]);
+    expect(previews).toEqual([]);
+    const output = formatPlan(planned);
+    expect(output).toContain('= app-a already exists, no change');
+    expect(output).toContain('cidr: 10.240.0.0/26');
+    expect(output).toContain('Plan: 0 to create, 1 already exist, 0 would fail.');
+  });
+
+  it('reports an ambiguous name as would fail, naming both candidates', async () => {
+    stub([existing('sub_1', '10.240.0.0/26'), existing('sub_2', '10.240.0.128/26')]);
+    const output = formatPlan(await planManifest(options, [entry]));
+    expect(output).toContain('# app-a would fail');
+    expect(output).toContain('ambiguous-name');
+    expect(output).toContain('10.240.0.0/26 (id sub_1)');
+    expect(output).toContain('10.240.0.128/26 (id sub_2)');
+  });
+
+  it('previews as before when nothing matches', async () => {
+    const previews = stub([]);
+    const planned = await planManifest(options, [entry]);
+    expect(previews).toHaveLength(1);
+    expect(planned[0].result.wouldSucceed).toBe(true);
   });
 });

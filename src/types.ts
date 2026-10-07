@@ -97,7 +97,13 @@ export type PreviewFailureReason =
   | 'tier-limit'
   | 'leaf-subnet-too-large'
   | 'already-exists'
-  | 'ambiguous-parent';
+  | 'ambiguous-parent'
+  /**
+   * Not one of the API's reasons: the CLI produces this itself, when a
+   * prefix_length entry's name matches more than one existing subnet in the
+   * same placement (findExistingByName in plan.ts). No request is sent for it.
+   */
+  | 'ambiguous-name';
 
 export interface PreviewFailure {
   wouldSucceed: false;

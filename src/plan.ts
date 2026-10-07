@@ -1,8 +1,8 @@
 import { mapWithConcurrency } from './concurrency.js';
-import { previewSubnet, type NxipClientOptions } from './client.js';
+import { listAllSubnets, previewSubnet, type NxipClientOptions } from './client.js';
 import type { ManifestEntry } from './manifest.js';
 import { parseIpv4Cidr, rangesOverlap } from './cidr.js';
-import type { PlannedSubnet } from './types.js';
+import type { NxipSubnet, PlannedSubnet, PreviewFailure } from './types.js';
 
 const PREVIEW_CONCURRENCY = 5;
 
@@ -14,13 +14,111 @@ const PREVIEW_CONCURRENCY = 5;
  * separately by `formatNestedEntries`, the same way a subnet waiting on a
  * pool declared in the same file is reported rather than failed.
  */
-export async function planManifest(options: NxipClientOptions, entries: ManifestEntry[]): Promise<PlannedSubnet[]> {
+export async function planManifest(
+  options: NxipClientOptions,
+  entries: ManifestEntry[],
+  existingSubnets?: NxipSubnet[]
+): Promise<PlannedSubnet[]> {
   const standalone = entries.filter((entry) => !entry.parent);
-  return mapWithConcurrency(standalone, PREVIEW_CONCURRENCY, async (entry) => ({
-    name: entry.name,
-    body: entry.body,
-    result: await previewSubnet(options, entry.body),
-  }));
+
+  // A prefix_length entry has no CIDR for the preview to recognise, so
+  // without this read every one of them previews as "will be created" on
+  // every run, and apply allocates it again. Read only when some entry needs
+  // it, so a CIDR-only manifest (every scan import) costs nothing extra.
+  // A failed read throws rather than being skipped: carrying on would be
+  // exactly the duplicate allocation this check exists to prevent.
+  const subnets =
+    existingSubnets ?? (standalone.some(needsNameMatch) ? await listAllSubnets(options) : []);
+
+  return mapWithConcurrency(standalone, PREVIEW_CONCURRENCY, async (entry) => {
+    if (needsNameMatch(entry)) {
+      const matched = nameMatchResult(entry, findExistingByName(entry, entry.body.parentSubnetId, subnets));
+      if (matched) return { name: entry.name, body: entry.body, result: matched };
+    }
+    return { name: entry.name, body: entry.body, result: await previewSubnet(options, entry.body) };
+  });
+}
+
+/** Entries that can only be recognised by name: they ask for a size, not a CIDR. */
+export function needsNameMatch(entry: ManifestEntry): boolean {
+  return entry.body.cidr === undefined && entry.body.prefixLength !== undefined;
+}
+
+export type NameMatch =
+  | { kind: 'none' }
+  | { kind: 'one'; subnet: NxipSubnet }
+  | { kind: 'ambiguous'; candidates: NxipSubnet[] };
+
+/**
+ * Finds the subnet an earlier apply already created for a prefix_length
+ * entry. An entry written with a CIDR is matched by the API's preview on
+ * that CIDR; one written with only a size has nothing for the API to match,
+ * so this matches it here, on the manifest name plus where the entry would
+ * be placed:
+ *
+ * - nested (`parent:` resolved to an id, or `parent_subnet_id`): the same
+ *   parent subnet;
+ * - top level: the same pool key, environment and region. Deliberately not
+ *   "no parent", because a top-level request can be placed inside a
+ *   landing-point subnet, and the subnet that apply created then has one.
+ *
+ * Family must match in both cases. Prefix length deliberately does not: the
+ * rule is name and placement, so an entry whose size was edited after it
+ * was created is reported as existing, at the CIDR it really holds, rather
+ * than allocated a second time under the same name.
+ *
+ * More than one match is reported, never resolved by picking one: guessing
+ * wrong would hand a manifest someone else's subnet.
+ *
+ * This is the short-term rule. It is only as stable as the name, and names
+ * are editable in the dashboard, so renaming a subnet there makes the next
+ * apply allocate again. The durable fix is docs/roadmap.md bet #19,
+ * stable-by-identity allocation: a dedicated, user-written identity the API
+ * itself answers "already holds X" for.
+ */
+export function findExistingByName(entry: ManifestEntry, parentId: string | undefined, existing: NxipSubnet[]): NameMatch {
+  const candidates = existing.filter(
+    (subnet) =>
+      subnet.name === entry.name &&
+      subnet.family === entry.body.family &&
+      (parentId !== undefined
+        ? subnet.parentSubnetId === parentId
+        : subnet.environment === entry.body.environment && subnet.region === entry.body.region)
+  );
+  if (candidates.length === 0) return { kind: 'none' };
+  if (candidates.length === 1) return { kind: 'one', subnet: candidates[0] };
+  return { kind: 'ambiguous', candidates };
+}
+
+/**
+ * A name match, phrased as the preview result the API would have given, so
+ * plan output, pool annotation and apply all treat it the way they already
+ * treat an explicit CIDR that exists. Undefined when nothing matched and
+ * the entry should be previewed for real.
+ *
+ * httpStatusIfAttempted is 0 because nothing was asked of the API.
+ */
+export function nameMatchResult(entry: ManifestEntry, match: NameMatch): PreviewFailure | undefined {
+  if (match.kind === 'none') return undefined;
+  if (match.kind === 'one') {
+    const { id, cidr, name } = match.subnet;
+    return {
+      wouldSucceed: false,
+      reason: 'already-exists',
+      message: `A subnet named "${entry.name}" already exists at ${cidr}.`,
+      httpStatusIfAttempted: 0,
+      existing: { id, cidr, name },
+    };
+  }
+  const listed = match.candidates.map((subnet) => `${subnet.cidr} (id ${subnet.id})`).join(', ');
+  return {
+    wouldSucceed: false,
+    reason: 'ambiguous-name',
+    message:
+      `${match.candidates.length} existing subnets are named "${entry.name}" in the same place: ${listed}. ` +
+      'Not guessing which one this entry means. Rename or remove the extras, or give this entry a cidr.',
+    httpStatusIfAttempted: 0,
+  };
 }
 
 /**
@@ -136,7 +234,10 @@ export function formatPlan(planned: PlannedSubnet[]): string {
     if (!item.result.wouldSucceed && item.result.reason === 'already-exists') {
       existing++;
       lines.push(`  = ${item.name} already exists, no change`);
-      if (item.body.cidr) lines.push(`    cidr: ${item.body.cidr}`);
+      // A prefix_length entry matched by name has no CIDR of its own, so the
+      // one it already holds is shown instead.
+      const cidr = item.body.cidr ?? item.result.existing?.cidr;
+      if (cidr) lines.push(`    cidr: ${cidr}`);
       lines.push('');
       continue;
     }

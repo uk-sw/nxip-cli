@@ -28,12 +28,13 @@ function jsonResponse(body: unknown, status = 200): Response {
 /**
  * A fetch mock covering every call plan/apply make against a one-subnet,
  * no-pools manifest: the organizations/children check (resolveTargetLine),
- * POST /v1/subnets/preview (planManifest), GET /v1/pools (listPoolsQuietly
+ * POST /v1/subnets/preview (planManifest), GET /v1/subnets (the name match
+ * for prefix_length entries), GET /v1/pools (listPoolsQuietly
  * in plan, or the existing-pools read inside apply). `childrenBehavior`
  * controls only the first of these, which is what these tests vary.
  */
 function stubFetch(childrenBehavior: 'has-customers' | 'no-customers' | 'fails') {
-  const fetchMock = vi.fn(async (input: unknown) => {
+  const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
     const url = String(input instanceof Request ? input.url : input);
     if (url.includes(CHILDREN_URL)) {
       if (childrenBehavior === 'fails') return jsonResponse({ message: 'Forbidden' }, 403);
@@ -48,6 +49,11 @@ function stubFetch(childrenBehavior: 'has-customers' | 'no-customers' | 'fails')
       });
     }
     if (url.includes('/v1/pools')) {
+      return jsonResponse({ data: [], meta: { total: 0, page: 1, limit: 100, totalPages: 1 } });
+    }
+    // The existing-subnets read that lets a prefix_length entry be
+    // recognised by name on a second run. Empty: nothing exists yet.
+    if (url.includes('/v1/subnets') && (init?.method ?? 'GET') === 'GET') {
       return jsonResponse({ data: [], meta: { total: 0, page: 1, limit: 100, totalPages: 1 } });
     }
     if (url.includes('/v1/subnets')) {

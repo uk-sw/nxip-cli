@@ -1,5 +1,5 @@
-import { createPool, createSubnet, listPools, previewSubnet, NxipApiError, type NxipClientOptions } from './client.js';
-import { planManifest } from './plan.js';
+import { createPool, createSubnet, listAllSubnets, listPools, previewSubnet, NxipApiError, type NxipClientOptions } from './client.js';
+import { findExistingByName, nameMatchResult, needsNameMatch, planManifest } from './plan.js';
 import type { Manifest, ManifestEntry, PoolEntry } from './manifest.js';
 
 export interface ApplyResult {
@@ -108,7 +108,12 @@ export async function applyManifest(options: NxipClientOptions, entries: Manifes
   // nothing for the preview to resolve against: those are validated by the
   // API at creation time instead.
   const standalone = ordered.filter((entry) => !entry.parent);
-  const planned = await planManifest(options, standalone);
+
+  // Read once, for every prefix_length entry, nested or not: see
+  // findExistingByName in plan.ts for why these are matched by name, and why
+  // a failed read stops the apply rather than being skipped.
+  const existingSubnets = ordered.some(needsNameMatch) ? await listAllSubnets(options) : [];
+  const planned = await planManifest(options, standalone, existingSubnets);
   const plannedByName = new Map(planned.map((item) => [item.name, item]));
 
   const createdIds = new Map<string, string>();
@@ -142,6 +147,19 @@ export async function applyManifest(options: NxipClientOptions, entries: Manifes
           results.push({ name: entry.name, kind: 'subnet', outcome: 'existing', detail: `${childPreview.existing.cidr} (id ${childPreview.existing.id})` });
           continue;
         }
+      } else {
+        // The same problem for a sized child: the preview cannot recognise
+        // it, so a second apply would nest a second one under the parent.
+        const matched = nameMatchResult(entry, findExistingByName(entry, parentId, existingSubnets));
+        if (matched?.reason === 'already-exists' && matched.existing) {
+          createdIds.set(entry.name, matched.existing.id);
+          results.push({ name: entry.name, kind: 'subnet', outcome: 'existing', detail: `${matched.existing.cidr} (id ${matched.existing.id})` });
+          continue;
+        }
+        if (matched) {
+          results.push({ name: entry.name, kind: 'subnet', outcome: 'failed', detail: `${matched.reason}: ${matched.message}` });
+          continue;
+        }
       }
     } else {
       const item = plannedByName.get(entry.name);
@@ -152,6 +170,12 @@ export async function applyManifest(options: NxipClientOptions, entries: Manifes
       if (item && !item.result.wouldSucceed && item.result.reason === 'already-exists' && item.result.existing) {
         createdIds.set(entry.name, item.result.existing.id);
         results.push({ name: entry.name, kind: 'subnet', outcome: 'existing', detail: `${item.result.existing.cidr} (id ${item.result.existing.id})` });
+        continue;
+      }
+      // Failed, not skipped: nothing stopped this entry except that apply
+      // will not choose between two subnets on the operator's behalf.
+      if (item && !item.result.wouldSucceed && item.result.reason === 'ambiguous-name') {
+        results.push({ name: entry.name, kind: 'subnet', outcome: 'failed', detail: `${item.result.reason}: ${item.result.message}` });
         continue;
       }
       if (item && !item.result.wouldSucceed) {
