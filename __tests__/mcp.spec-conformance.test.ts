@@ -281,8 +281,8 @@ describe('MCP server conformance to docs/specs/mcp-server.md', () => {
       written.push(String(chunk));
       return true;
     };
-    vi.spyOn(process.stdout, 'write').mockImplementation(capture as typeof process.stdout.write);
-    vi.spyOn(process.stderr, 'write').mockImplementation(capture as typeof process.stderr.write);
+    vi.spyOn(process.stdout, 'write').mockImplementation(capture);
+    vi.spyOn(process.stderr, 'write').mockImplementation(capture);
     for (const method of ['log', 'error', 'warn', 'info', 'debug'] as const) {
       vi.spyOn(console, method).mockImplementation((...parts: unknown[]) => void written.push(parts.map(String).join(' ')));
     }

@@ -226,7 +226,7 @@ async function parseResponse<T>(response: Response): Promise<T> {
     const message =
       parsed && typeof parsed === 'object' && 'message' in parsed
         ? withOperationOutcomes(
-            withIssues(String((parsed as { message: unknown }).message), (parsed as { issues?: unknown }).issues),
+            withIssues(String(parsed.message), (parsed as { issues?: unknown }).issues),
             (parsed as { operations?: unknown }).operations
           )
         : text || `nxip API returned unexpected status ${response.status}`;

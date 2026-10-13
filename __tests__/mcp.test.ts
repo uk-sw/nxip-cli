@@ -561,8 +561,8 @@ describe('mcp server', () => {
         written.push(String(chunk));
         return true;
       };
-      vi.spyOn(process.stdout, 'write').mockImplementation(capture as typeof process.stdout.write);
-      vi.spyOn(process.stderr, 'write').mockImplementation(capture as typeof process.stderr.write);
+      vi.spyOn(process.stdout, 'write').mockImplementation(capture);
+      vi.spyOn(process.stderr, 'write').mockImplementation(capture);
       for (const method of ['log', 'info', 'debug', 'warn', 'error'] as const) {
         vi.spyOn(console, method).mockImplementation((...args: unknown[]) => {
           written.push(args.map(String).join(' '));

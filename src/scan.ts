@@ -401,12 +401,6 @@ export function analyseDiscovery(
   };
 }
 
-const OVERLAP_PHRASING: Record<OverlapKind, string> = {
-  identical: 'identical block',
-  contains: 'contains',
-  'contained-by': 'sits inside',
-  partial: 'partially overlaps',
-};
 
 function label(name: string | null, id: string): string {
   return name ? `${name} (${id})` : id;
@@ -496,8 +490,6 @@ export function everyCiscoDeviceFailed(discovery: MergedDiscovery): boolean {
 export function formatScanReport(report: ScanReport): string {
   const lines: string[] = [];
   const { totals, discovery } = report;
-
-  const allRegions = [...new Set(discovery.sources.flatMap((s) => s.regions))];
 
   // A reader cannot tell a pseudonym from a real name, so the report says
   // which it is rather than leaving them to guess.
@@ -655,10 +647,6 @@ interface ProposedPool {
   provider?: CloudProvider;
   account?: string | null;
   range: Ipv4Range;
-}
-
-function sanitize(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'unnamed';
 }
 
 /**
