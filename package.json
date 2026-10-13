@@ -44,7 +44,8 @@
     "prepare": "npm run build",
     "dev": "tsx src/index.ts",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint ."
   },
   "dependencies": {
     "@aws-sdk/client-ec2": "^3.1125.0",
@@ -60,8 +61,10 @@
   "devDependencies": {
     "@types/node": "^22.10.2",
     "@types/ssh2": "^1.15.6",
+    "eslint": "^10.12.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
+    "typescript-eslint": "^8.71.2",
     "vitest": "^4.1.11"
   }
 }

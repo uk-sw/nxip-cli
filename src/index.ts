@@ -411,7 +411,7 @@ async function main() {
         );
       } catch (error) {
         const known = error instanceof AwsScanError || error instanceof AzureScanError || error instanceof CiscoScanError || error instanceof KnownHostsError;
-        console.error(known ? (error as Error).message : `${provider} scan failed: ${error instanceof Error ? error.message : String(error)}`);
+        console.error(known ? error.message : `${provider} scan failed: ${error instanceof Error ? error.message : String(error)}`);
         process.exitCode = 1;
         return;
       }

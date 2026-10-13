@@ -256,7 +256,7 @@ describe('what a run proposes', () => {
     const api = fakeApi({
       preview: (body) =>
         (body as { cidr?: string }).cidr === '10.50.0.0/24'
-          ? ({ wouldSucceed: false, reason: 'no-pool', message: 'No pool covers this block', httpStatusIfAttempted: 422 } as PreviewResult)
+          ? ({ wouldSucceed: false, reason: 'no-pool', message: 'No pool covers this block', httpStatusIfAttempted: 422 })
           : ({ wouldSucceed: true } as unknown as PreviewResult),
     });
     const log = await runAgentOnce(config(), api.deps, newAgentState());
